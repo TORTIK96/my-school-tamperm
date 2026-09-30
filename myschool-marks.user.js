@@ -1,11 +1,14 @@
 // ==UserScript==
 // @name         Моя школа — оценки, расписание, задания
 // @namespace    tortik96.myschool
-// @version      0.7.0
+// @version      0.7.1
 // @description  Удобный дневник поверх Госуслуг «Моя школа»: оценки со средним и средневзвешенным баллом, расписание, домашние задания
 // @match        https://www.gosuslugi.ru/*
 // @grant        none
 // @run-at       document-idle
+// @homepageURL  https://github.com/TORTIK96/my-school-tamperm
+// @updateURL    https://raw.githubusercontent.com/TORTIK96/my-school-tamperm/main/myschool-marks.user.js
+// @downloadURL  https://raw.githubusercontent.com/TORTIK96/my-school-tamperm/main/myschool-marks.user.js
 // ==/UserScript==
 
 (function () {
