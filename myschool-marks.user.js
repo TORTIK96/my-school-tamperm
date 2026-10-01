@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Моя школа — оценки, расписание, задания
 // @namespace    tortik96.myschool
-// @version      0.7.1
+// @version      0.7.3
 // @description  Удобный дневник поверх Госуслуг «Моя школа»: оценки со средним и средневзвешенным баллом, расписание, домашние задания
 // @match        https://www.gosuslugi.ru/*
 // @grant        none
@@ -99,10 +99,13 @@
     if (!cls || !cls.periods) throw new Error('Не удалось получить четверти класса. Обновите страницу и попробуйте снова.');
     const ps = cls.periods.map((p) => ({
       name: `${p.period_num} ${p.period_type_descrioption || p.period_type_code}`,
-      from: p.period_start_date, to: p.period_end_date, quarter: p.period_type_code === 'quarter',
+      from: p.period_start_date, to: p.period_end_date, type: p.period_type_code || 'other',
+      // основной учебный период класса (четверть, триместр или полугодие) — по флагу period_is_study,
+      // а не по названию: у разных школ своя система
+      quarter: p.period_is_study === true || (p.period_is_study == null && p.period_type_code === 'quarter'),
     }));
     ps.sort((a, b) => (a.quarter === b.quarter ? a.from.localeCompare(b.from) : a.quarter ? -1 : 1));
-    ps.push({ name: 'Весь год', from: ps.reduce((m, p) => (p.from < m ? p.from : m), ps[0].from),
+    ps.push({ type: 'year', name: 'Весь год', from: ps.reduce((m, p) => (p.from < m ? p.from : m), ps[0].from),
       to: ps.reduce((m, p) => (p.to > m ? p.to : m), ps[0].to), quarter: false });
     ps.school = cls.short_name || null; // название школы для шапки
     return ps;
@@ -110,7 +113,10 @@
 
   function defaultPeriod(ps) {
     const today = isoD(new Date());
-    const q = ps.filter((p) => p.quarter);
+    // если ученик сам выбирал вид периода (например, полугодия в 10–11 классе) — открываем его
+    const pref = load('msx_period_type', null);
+    const byPref = pref ? ps.filter((p) => p.type === pref) : [];
+    const q = byPref.length ? byPref : ps.filter((p) => p.quarter);
     return q.find((p) => p.from <= today && today <= p.to) || q.filter((p) => p.from <= today).pop() || ps[0];
   }
 
@@ -568,7 +574,7 @@
 
   // ---------- вкладка «Оценки» ----------
   function marksControls() {
-    return periods ? [h('select', { 'aria-label': 'Период', onchange: async (e) => { period = periods[e.target.value]; data = null; await reload(); } },
+    return periods ? [h('select', { 'aria-label': 'Период', onchange: async (e) => { period = periods[e.target.value]; save('msx_period_type', period.type); data = null; await reload(); } },
       periods.map((p, i) => h('option', { value: i, selected: p === period ? '' : null }, p.name)))] : [];
   }
 
