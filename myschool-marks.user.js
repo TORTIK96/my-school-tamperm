@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Моя школа — оценки, расписание, задания
 // @namespace    tortik96.myschool
-// @version      0.7.4
+// @version      0.9.0
 // @description  Удобный дневник поверх Госуслуг «Моя школа»: оценки со средним и средневзвешенным баллом, расписание, домашние задания
 // @match        https://www.gosuslugi.ru/*
 // @grant        none
@@ -274,6 +274,8 @@
   .msx-inp{width:74px;padding:6px 10px}
   .msx-set{margin-top:22px;padding:16px 18px;background:var(--card);border-radius:24px;box-shadow:0 4px 0 var(--line)}
   .msx-err{color:var(--g2);font-weight:800}
+  .msx-appinfo{margin:28px 0 0;text-align:center;font-size:12px;color:var(--muted)}
+  .msx-sess{display:block;margin-top:6px}
   .msx-pop{position:fixed;z-index:2147483002;width:330px;max-width:calc(100vw - 16px);background:var(--card);color:var(--ink);
     border-radius:24px;padding:16px 18px;box-shadow:0 5px 0 var(--line),0 18px 40px rgba(27,36,72,.28)}
   .msx-pop-h{display:flex;gap:12px;align-items:center;margin-bottom:12px}
@@ -422,7 +424,14 @@
       h('button', { onclick: closePanel }, APP ? 'Сайт' : 'Закрыть'));
     const nav = h('nav', { class: 'msx-tabs', 'aria-label': 'Разделы' }, TABS.map(([k, n]) =>
       h('button', { 'aria-current': k === tab ? 'page' : null, onclick: () => showTab(k) }, n)));
-    root.replaceChildren(h('div', { class: 'msx-wrap' }, top, nav, body));
+    // в приложении внизу — версии и ручная проверка обновлений
+    const appInfo = APP && window.MsxAndroid && MsxAndroid.appVersion
+      ? h('p', { class: 'msx-appinfo' }, `Приложение ${MsxAndroid.appVersion()} · интерфейс ${window.MSX_SCRIPT_VERSION || '?'} `,
+        h('button', { class: 'msx-wbtn', onclick: () => MsxAndroid.checkUpdate() }, 'Проверить обновления'),
+        // эксперимент с продлением сессии: когда был вход и жива ли сессия
+        MsxAndroid.sessionInfo ? h('span', { class: 'msx-sess' }, MsxAndroid.sessionInfo() || '') : null)
+      : null;
+    root.replaceChildren(h('div', { class: 'msx-wrap' }, top, nav, body, appInfo));
   }
 
   function renderMessage(text, isError) {
@@ -819,4 +828,3 @@
   syncButton();
   setInterval(syncButton, 1000);
 })();
-
