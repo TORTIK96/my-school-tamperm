@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Моя школа — оценки, расписание, задания
 // @namespace    tortik96.myschool
-// @version      0.7.3
+// @version      0.7.4
 // @description  Удобный дневник поверх Госуслуг «Моя школа»: оценки со средним и средневзвешенным баллом, расписание, домашние задания
 // @match        https://www.gosuslugi.ru/*
 // @grant        none
@@ -108,13 +108,17 @@
     ps.push({ type: 'year', name: 'Весь год', from: ps.reduce((m, p) => (p.from < m ? p.from : m), ps[0].from),
       to: ps.reduce((m, p) => (p.to > m ? p.to : m), ps[0].to), quarter: false });
     ps.school = cls.short_name || null; // название школы для шапки
+    // Флаг period_is_study витрина отдаёт ненадёжно: у 11 класса четверти помечены основными,
+    // хотя в журнале школы 10–11 классы учатся по полугодиям. Поэтому для старших классов
+    // по умолчанию открываем полугодия (выбор ученика всё равно важнее, см. defaultPeriod).
+    ps.preferType = Number(cls.class_num) >= 10 && ps.some((p) => p.type === 'halfyear') ? 'halfyear' : null;
     return ps;
   }
 
   function defaultPeriod(ps) {
     const today = isoD(new Date());
     // если ученик сам выбирал вид периода (например, полугодия в 10–11 классе) — открываем его
-    const pref = load('msx_period_type', null);
+    const pref = load('msx_period_type', null) || ps.preferType;
     const byPref = pref ? ps.filter((p) => p.type === pref) : [];
     const q = byPref.length ? byPref : ps.filter((p) => p.quarter);
     return q.find((p) => p.from <= today && today <= p.to) || q.filter((p) => p.from <= today).pop() || ps[0];
@@ -815,3 +819,4 @@
   syncButton();
   setInterval(syncButton, 1000);
 })();
+
