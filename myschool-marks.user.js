@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Моя школа — оценки, расписание, задания
 // @namespace    tortik96.myschool
-// @version      0.9.0
+// @version      0.9.1
 // @description  Удобный дневник поверх Госуслуг «Моя школа»: оценки со средним и средневзвешенным баллом, расписание, домашние задания
 // @match        https://www.gosuslugi.ru/*
 // @grant        none
@@ -276,6 +276,7 @@
   .msx-err{color:var(--g2);font-weight:800}
   .msx-appinfo{margin:28px 0 0;text-align:center;font-size:12px;color:var(--muted)}
   .msx-sess{display:block;margin-top:6px}
+  .msx-sess-link{cursor:pointer;text-decoration:underline dotted;text-underline-offset:3px}
   .msx-pop{position:fixed;z-index:2147483002;width:330px;max-width:calc(100vw - 16px);background:var(--card);color:var(--ink);
     border-radius:24px;padding:16px 18px;box-shadow:0 5px 0 var(--line),0 18px 40px rgba(27,36,72,.28)}
   .msx-pop-h{display:flex;gap:12px;align-items:center;margin-bottom:12px}
@@ -429,7 +430,12 @@
       ? h('p', { class: 'msx-appinfo' }, `Приложение ${MsxAndroid.appVersion()} · интерфейс ${window.MSX_SCRIPT_VERSION || '?'} `,
         h('button', { class: 'msx-wbtn', onclick: () => MsxAndroid.checkUpdate() }, 'Проверить обновления'),
         // эксперимент с продлением сессии: когда был вход и жива ли сессия
-        MsxAndroid.sessionInfo ? h('span', { class: 'msx-sess' }, MsxAndroid.sessionInfo() || '') : null)
+        // нажатие открывает журнал проверок сессии (приложение 0.9.3+)
+        MsxAndroid.sessionInfo ? h('span', {
+          class: 'msx-sess' + (MsxAndroid.showSessionLog ? ' msx-sess-link' : ''),
+          role: MsxAndroid.showSessionLog ? 'button' : null,
+          onclick: MsxAndroid.showSessionLog ? () => MsxAndroid.showSessionLog() : null,
+        }, (MsxAndroid.sessionInfo() || (MsxAndroid.showSessionLog ? 'сессия' : '')) + (MsxAndroid.showSessionLog ? ' · журнал ›' : '')) : null)
       : null;
     root.replaceChildren(h('div', { class: 'msx-wrap' }, top, nav, body, appInfo));
   }
