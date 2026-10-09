@@ -1,11 +1,12 @@
 // ==UserScript==
 // @name         Моя школа — учитель: темы и ДЗ из КТП и Excel
 // @namespace    tortik96.myschool.teacher
-// @version      0.2.0
+// @version      0.3.0
 // @description  На странице «Уроки» журнала: проставить темы и домашние задания из КТП во все уроки разом или вставить их столбцами из Excel
 // @match        https://edu.gosuslugi.ru/journal-app/page.lessons/*
 // @grant        none
 // @run-at       document-idle
+// @require      https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js
 // @homepageURL  https://github.com/TORTIK96/my-school-tamperm
 // @updateURL    https://raw.githubusercontent.com/TORTIK96/my-school-tamperm/main/myschool-teacher.user.js
 // @downloadURL  https://raw.githubusercontent.com/TORTIK96/my-school-tamperm/main/myschool-teacher.user.js
@@ -221,6 +222,11 @@
   #msxt .old{color:#8a8fa3;text-decoration:line-through}
   #msxt .st{white-space:nowrap;font-weight:700}
   #msxt .ok{color:#1f8a4c}#msxt .bad{color:#c4372a}#msxt .skip{color:#8a8fa3}
+  #msxt .drop{border:2px dashed #d9d2c3;border-radius:12px;padding:14px;margin:0 0 10px;background:#fff;cursor:pointer;color:#3d4462}
+  #msxt .drop.on{border-color:#E25628;background:#FFF3EC}
+  #msxt tr.sec td{background:#f1ebde;font-size:13px}
+  #msxt a.fx{font-size:12px;color:#8a8fa3;margin-left:6px}
+  #msxt a.fx:hover{color:#E25628}
   #msxt .bar{height:8px;background:#eee6d6;border-radius:99px;overflow:hidden;margin-top:12px}
   #msxt .bar i{display:block;height:100%;width:0;background:#E25628;transition:width .2s}
   `;
@@ -269,7 +275,7 @@
         h('div', { class: 'tabs' },
           h('button', { 'aria-pressed': String(mode === 'plan'), disabled: !g.hasPlan, title: g.hasPlan ? '' : 'для этой группы КТП не загружен',
             onclick: () => { mode = 'plan'; render(); } }, 'Из КТП'),
-          h('button', { 'aria-pressed': String(mode === 'excel'), onclick: () => { mode = 'excel'; render(); } }, 'Из Excel')),
+          h('button', { 'aria-pressed': String(mode === 'excel'), onclick: () => { mode = 'excel'; render(); } }, 'Из файла / Excel')),
         mode === 'plan' ? planView(ls) : excelView(ls));
     }
 
@@ -373,46 +379,212 @@
       return wrap;
     }
 
-    // ----- режим «Из Excel»: вставить столбцы «тема | ДЗ», строка = урок -----
+    // ----- режим «Из Excel»: файл КТП с компьютера или вставка из Excel -----
     function excelView(ls) {
-      let text = '';
+      let grid = [];          // таблица как есть: строки × ячейки (строки)
+      let srcName = '';
+      let cols = null;        // {header, topic, hours, hw, section}
+      let flip = new Set();   // строки, где учитель вручную поменял «тема ↔ раздел»
       let from = (ls.find((l) => l.editable && !l.topic) || ls[0] || { lnum: 1 }).lnum;
-      let keepFilled = true;
+      let startItem = 0;      // 0 = авто: столько тем пропустить, сколько уроков до «С урока №»
+      let keepFilled = true, hwLast = true, withSection = false;
+      const area = h('div', {});
       const table = h('div', {});
       const goBtn = h('button', { class: 'go' }, 'Записать');
       const bar = h('i', {});
 
-      // строки из Excel: ячейки через Tab. Пустые ячейки и номера урока в начале отбрасываем,
-      // дальше первая ячейка — тема, вторая (если есть) — домашнее задание
-      function rowsFrom(t) {
-        return t.replace(/\r/g, '').split('\n').map((line) => {
-          const cells = line.split('\t').map((c) => c.trim().replace(/^"([\s\S]*)"$/, '$1').trim());
-          while (cells.length && /^(\d{1,3}[.)]?)?$/.test(cells[0])) cells.shift();
-          return { topic: cells[0] || '', hw: cells[1] || '' };
-        }).filter((x) => x.topic);
+      // ---------- разбор таблицы ----------
+      const norm = (v) => String(v == null ? '' : v).replace(/\s+/g, ' ').trim();
+      const hoursOf = (v) => { const m = norm(v).match(/\d+(?:[.,]\d+)?/); return m ? Math.min(20, Math.max(0, Math.round(parseFloat(m[0].replace(',', '.'))))) : NaN; };
+      const isSectionText = (t) => /^(раздел|модуль|глава|блок|часть)(\s|\d|[.:№IVX]|$)/i.test(t);
+      const isTrash = (t) => !t || /^(итого|всего|резерв(ное)? время$)/i.test(t) || /^\d+([.,]\d+)?$/.test(t);
+
+      function guessCols(g) {
+        const width = Math.max(0, ...g.map((r) => r.length));
+        const has = (re) => (r) => r.findIndex((c) => re.test(norm(c)));
+        // строка заголовков — первая из первых 20, где есть «тема»/«наименование»
+        let header = -1;
+        for (let i = 0; i < Math.min(20, g.length); i++) if (g[i].some((c) => /(^|\s)(тема|темы|наименование|содержание)/i.test(norm(c)))) { header = i; break; }
+        const c = { header, topic: -1, hours: -1, hw: -1, section: -1 };
+        if (header >= 0) {
+          const hr = g[header];
+          c.topic = has(/(^|\s)(тема|темы)\b.*(урок|занят)|^тема|наименование.*(тем|урок)/i)(hr);
+          if (c.topic < 0) c.topic = has(/тем|наименование|содержание/i)(hr);
+          c.hours = has(/час|кол.?во|количество/i)(hr);
+          c.hw = has(/домашн|д\/з|^дз\b|задани/i)(hr);
+          c.section = has(/раздел|модуль|блок|глава/i)(hr);
+          if (c.section === c.topic) c.section = -1;
+          if (c.hw === c.topic) c.hw = -1;
+        }
+        if (c.topic < 0) {
+          // без заголовков: тема — столбец с самым длинным текстом, ДЗ — следующий текстовый, часы — числовой столбец с небольшими числами
+          const stat = [...Array(width)].map((_, j) => {
+            const vals = g.map((r) => norm(r[j])).filter(Boolean);
+            const nums = vals.filter((v) => /^\d{1,2}([.,]\d)?(\s*ч\.?)?$/.test(v));
+            return { j, text: vals.filter((v) => !/^\d/.test(v) || v.length > 6).reduce((s, v) => s + v.length, 0), nums: nums.length, n: vals.length };
+          });
+          const texts = stat.filter((x) => x.text > 0).sort((a, b) => b.text - a.text);
+          c.topic = texts[0] ? texts[0].j : 0;
+          const after = stat.filter((x) => x.j > c.topic && x.text > 0 && x.nums < x.n / 2);
+          c.hw = after[0] ? after[0].j : -1;
+          const hcol = stat.find((x) => x.j > c.topic && x.n && x.nums >= x.n * 0.6 && x.j !== c.hw);
+          c.hours = hcol ? hcol.j : -1;
+        }
+        return c;
       }
+
+      // строки КТП: {row, kind: 'topic'|'section', text, hours, hw, section}
+      function entries() {
+        if (!cols || cols.topic < 0) return [];
+        const out = [];
+        let section = '';
+        const anyHours = cols.hours >= 0 && grid.some((r, i) => i > cols.header && hoursOf(r[cols.hours]) > 0);
+        for (let i = cols.header + 1; i < grid.length; i++) {
+          const r = grid[i];
+          if (cols.section >= 0 && norm(r[cols.section])) section = norm(r[cols.section]);
+          let text = norm(r[cols.topic]);
+          // раздел может стоять в объединённой ячейке левее темы
+          if (!text) {
+            const other = r.map(norm).filter((v, j) => v && j !== cols.hours && j !== cols.hw && !/^\d+([.,]\d+)?$/.test(v));
+            if (other.length === 1 && cols.section < 0) out.push({ row: i, kind: flip.has(i) ? 'topic' : 'section', text: other[0], hours: NaN, hw: '' });
+            continue;
+          }
+          if (isTrash(text)) continue;
+          const hours = cols.hours >= 0 ? hoursOf(r[cols.hours]) : NaN;
+          let kind = 'topic';
+          if (cols.section < 0 && (isSectionText(text) || (anyHours && !(hours > 0)))) kind = 'section';
+          if (flip.has(i)) kind = kind === 'topic' ? 'section' : 'topic';
+          out.push({ row: i, kind, text, hours, hw: cols.hw >= 0 ? norm(r[cols.hw]) : '', section });
+        }
+        // раздел из строки-заголовка действует до следующего раздела
+        let cur = '';
+        for (const e of out) { if (e.kind === 'section') cur = e.text; else if (!e.section) e.section = cur; }
+        return out;
+      }
+
+      // одна строка КТП на N часов = N уроков подряд с одной темой
+      function items() {
+        const res = [];
+        for (const e of entries()) {
+          if (e.kind !== 'topic') continue;
+          const n = cols.hours >= 0 && e.hours > 0 ? e.hours : 1;
+          for (let k = 0; k < n; k++) {
+            res.push({
+              e, part: n > 1 ? `${k + 1}/${n}` : '',
+              topic: withSection && e.section ? `${e.section.replace(/[.:\s]+$/, '')}. ${e.text}` : e.text,
+              hw: e.hw && (!hwLast || k === n - 1) ? e.hw : '',
+            });
+          }
+        }
+        return res;
+      }
+
+      const autoStart = () => ls.filter((l) => l.lnum < from).length + 1;
       function plan() {
-        const rs = rowsFrom(text);
+        const its = items();
+        const s0 = (startItem || autoStart()) - 1;
         const target = ls.filter((l) => l.editable && l.lnum >= from && !(keepFilled && l.topic));
-        return target.map((l, i) => rs[i] && { l, topic: rs[i].topic, hw: rs[i].hw, due: dueDate(g, l) }).filter(Boolean);
+        return target.map((l, i) => its[s0 + i] && Object.assign({ l, due: dueDate(g, l) }, its[s0 + i])).filter(Boolean);
       }
-      function drawTable() {
+
+      // ---------- загрузка ----------
+      function loadGrid(rows, name) {
+        grid = rows.map((r) => (r || []).map(norm));
+        while (grid.length && !grid[grid.length - 1].some(Boolean)) grid.pop();
+        srcName = name; cols = guessCols(grid); flip = new Set();
+        draw();
+      }
+      function needXLSX() {
+        if (typeof XLSX !== 'undefined') return Promise.resolve(XLSX); // eslint-disable-line no-undef
+        return new Promise((ok, bad) => {
+          const sc = document.createElement('script');
+          sc.src = 'https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js';
+          sc.onload = () => (window.XLSX ? ok(window.XLSX) : bad(new Error('нет XLSX')));
+          sc.onerror = () => bad(new Error('не загрузилась библиотека чтения Excel'));
+          document.head.append(sc);
+        });
+      }
+      async function readFile(f) {
+        try {
+          const buf = await f.arrayBuffer();
+          const X = await needXLSX();
+          let wb;
+          if (/\.(csv|txt)$/i.test(f.name)) {
+            // CSV из Excel обычно в windows-1251
+            let text;
+            try { text = new TextDecoder('utf-8', { fatal: true }).decode(buf); } catch (_) { text = new TextDecoder('windows-1251').decode(buf); }
+            wb = X.read(text.replace(/^﻿/, ''), { type: 'string', raw: true });
+          } else wb = X.read(buf, { type: 'array' });
+          // лист с темами: первый, где есть «тема», иначе первый
+          let ws = wb.Sheets[wb.SheetNames[0]];
+          for (const n of wb.SheetNames) {
+            const rows = X.utils.sheet_to_json(wb.Sheets[n], { header: 1, raw: false, defval: '' });
+            if (rows.slice(0, 20).some((r) => r.some((c) => /тема/i.test(String(c))))) { ws = wb.Sheets[n]; break; }
+          }
+          loadGrid(X.utils.sheet_to_json(ws, { header: 1, raw: false, defval: '', blankrows: false }), f.name);
+        } catch (e) { alert('Не получилось прочитать файл: ' + e.message); }
+      }
+
+      // ---------- отрисовка ----------
+      function colSelect(key, label, optional) {
+        const width = Math.max(0, ...grid.map((r) => r.length));
+        const name = (j) => {
+          const head = cols.header >= 0 ? norm(grid[cols.header][j]) : '';
+          const sample = grid.slice(cols.header + 1).map((r) => norm(r[j])).find(Boolean) || '';
+          return `${String.fromCharCode(65 + (j % 26))}: ${(head || sample).slice(0, 28)}`;
+        };
+        return h('label', {}, label, h('select', { onchange: (e) => { cols[key] = Number(e.target.value); flip = new Set(); draw(); } },
+          optional ? h('option', { value: -1, selected: cols[key] < 0 }, '— нет —') : null,
+          [...Array(width)].map((_, j) => h('option', { value: j, selected: cols[key] === j }, name(j)))));
+      }
+
+      function draw() {
         const ps = plan();
-        const rs = rowsFrom(text);
-        const anyHW = ps.some((x) => x.hw);
+        const its = items();
+        const es = entries();
+        const nSec = es.filter((e) => e.kind === 'section').length;
+        const anyHW = its.some((x) => x.hw);
         goBtn.disabled = running || !ps.length;
         goBtn.textContent = running ? 'Идёт…' : `Записать (${ps.length})`;
-        const extra = rs.length - ps.length;
+
+        area.replaceChildren(
+          grid.length && cols ? h('div', {},
+            h('div', { class: 'note' }, `«${srcName}»: тем ${es.length - nSec}${nSec ? `, разделов ${nSec}` : ''} → ${its.length} уроков` + (cols.hours >= 0 ? ' (с учётом часов)' : '')),
+            h('div', { class: 'row' }, colSelect('topic', 'Тема:', false), colSelect('hours', 'Часы:', true), colSelect('hw', 'ДЗ:', true), colSelect('section', 'Раздел:', true)),
+            h('div', { class: 'row' },
+              h('label', {}, 'С урока №', h('input', { type: 'number', min: 1, value: from, style: 'width:70px', onchange: (e) => { from = Number(e.target.value) || 1; draw(); } })),
+              h('label', { title: 'какую строку КТП записать в этот урок; по умолчанию — по порядку уроков в периоде' }, 'взять тему КТП №',
+                h('input', { type: 'number', min: 1, value: startItem || autoStart(), style: 'width:70px', onchange: (e) => { startItem = Math.max(1, Number(e.target.value) || 1); draw(); } })),
+              h('label', {}, h('input', { type: 'checkbox', checked: keepFilled, onchange: (e) => { keepFilled = e.target.checked; draw(); } }), 'не трогать заполненные уроки')),
+            h('div', { class: 'row' },
+              cols.hours >= 0 ? h('label', { title: 'тема на 2 часа идёт на 2 урока; ДЗ — только на последний из них' }, h('input', { type: 'checkbox', checked: hwLast, onchange: (e) => { hwLast = e.target.checked; draw(); } }), 'ДЗ многочасовой темы — на последний урок') : null,
+              h('label', {}, h('input', { type: 'checkbox', checked: withSection, onchange: (e) => { withSection = e.target.checked; draw(); } }), 'писать раздел перед темой'))) : null);
+
+        if (!ps.length) { table.replaceChildren(grid.length ? h('div', { class: 'note warn' }, 'Нет уроков для записи: проверьте «С урока №», «взять тему КТП №» и столбец с темой.') : ''); return; }
+        const extra = its.length - ((startItem || autoStart()) - 1) - ps.length;
+        // предпросмотр: уроки по порядку, перед темой — строка раздела, если он сменился
+        const body = [];
+        let lastSec = null;
+        for (const x of ps) {
+          if (x.e.section && x.e.section !== lastSec && !withSection) {
+            const secRow = es.find((e) => e.kind === 'section' && e.text === x.e.section);
+            body.push(h('tr', { class: 'sec' }, h('td', { colspan: anyHW ? 5 : 4 },
+              h('b', {}, x.e.section), ' ',
+              secRow ? h('a', { href: '#', class: 'fx', title: 'это не раздел, а тема урока', onclick: (ev) => { ev.preventDefault(); flip.has(secRow.row) ? flip.delete(secRow.row) : flip.add(secRow.row); draw(); } }, 'это тема') : null)));
+          }
+          lastSec = x.e.section;
+          body.push(h('tr', { 'data-l': x.l.lnum },
+            h('td', { class: 'n' }, x.l.lnum + (x.l.num !== '0' ? ' (2-й)' : '')),
+            h('td', { class: 'n' }, ddmm(x.l.date)),
+            h('td', {}, x.l.topic ? [h('span', { class: 'old' }, x.l.topic), h('br')] : null, x.topic,
+              x.part ? h('span', { class: 'skip' }, ` · ${x.part}`) : null, ' ',
+              !x.part || x.part.startsWith('1/') ? h('a', { href: '#', class: 'fx', title: 'это заголовок раздела, а не тема урока', onclick: (ev) => { ev.preventDefault(); flip.has(x.e.row) ? flip.delete(x.e.row) : flip.add(x.e.row); draw(); } }, 'это раздел') : null),
+            anyHW ? h('td', { class: 'hw' }, !x.hw ? '' : x.l.ht ? h('span', { class: 'skip' }, 'уже задано') : [x.hw, h('br'), h('span', { class: 'skip' }, x.due ? 'на ' + ddmm(x.due) : 'на каникулы')]) : null,
+            h('td', { class: 'st' }, '')));
+        }
         table.replaceChildren(
-          rs.length && extra > 0 ? h('div', { class: 'note warn' }, `Строк в списке ${rs.length}, а подходящих уроков ${ps.length}: последние ${extra} не поместятся в этот период.`) : null,
-          ps.length ? h('table', {},
-            h('thead', {}, h('tr', {}, h('th', {}, '№'), h('th', {}, 'Дата'), h('th', {}, 'Тема'), anyHW ? h('th', {}, 'ДЗ') : null, h('th', {}, ''))),
-            h('tbody', {}, ps.map(({ l, topic, hw, due }) => h('tr', { 'data-l': l.lnum },
-              h('td', { class: 'n' }, l.lnum + (l.num !== '0' ? ' (2-й)' : '')),
-              h('td', { class: 'n' }, ddmm(l.date)),
-              h('td', {}, l.topic ? [h('span', { class: 'old' }, l.topic), h('br'), topic] : topic),
-              anyHW ? h('td', { class: 'hw' }, !hw ? '' : l.ht ? h('span', { class: 'skip' }, 'уже задано') : [hw, h('br'), h('span', { class: 'skip' }, due ? 'на ' + ddmm(due) : 'на каникулы')]) : null,
-              h('td', { class: 'st' }, ''))))) : null);
+          extra > 0 ? h('div', { class: 'note warn' }, `Ещё ${extra} уроков КТП не поместились в этот период — их запишете, открыв следующую четверть/полугодие (поле «взять тему КТП №»).`) : null,
+          h('table', {}, h('thead', {}, h('tr', {}, h('th', {}, '№'), h('th', {}, 'Дата'), h('th', {}, 'Тема'), anyHW ? h('th', {}, 'ДЗ') : null, h('th', {}, ''))), h('tbody', {}, body)));
       }
 
       goBtn.onclick = async () => {
@@ -420,7 +592,9 @@
         if (!ps.length) return;
         const nHW = ps.filter((x) => x.hw && !x.l.ht).length;
         if (!confirm(`Записать ${ps.length} тем${nHW ? ` и ${nHW} ДЗ` : ''} в уроки ${ddmm(ps[0].l.date)}–${ddmm(ps[ps.length - 1].l.date)}?\nВсё сразу сохранится в журнал.`)) return;
-        running = true; stopFlag = false; drawTable();
+        running = true; stopFlag = false; goBtn.disabled = true; goBtn.textContent = 'Идёт…';
+        area.querySelectorAll('input,select').forEach((x) => { x.disabled = true; });
+        table.querySelectorAll('a.fx').forEach((x) => x.remove());
         let done = 0, fail = 0, hwDone = 0;
         for (let i = 0; i < ps.length; i++) {
           const { l, topic, hw, due } = ps[i];
@@ -436,9 +610,9 @@
               const bad = backdated(due);
               if (bad) hwc.replaceChildren(h('span', { class: 'skip' }, bad));
               else {
-                const items = [htItem(due, hw, 0, null, null)];
-                await saveHT(info, g, l, items);
-                paintHT(l, items); l.ht = true; hwDone++; note += ', ДЗ ✓';
+                const its = [htItem(due, hw, 0, null, null)];
+                await saveHT(info, g, l, its);
+                paintHT(l, its); l.ht = true; hwDone++; note += ', ДЗ ✓';
               }
             }
             st.textContent = note; st.className = 'st ok';
@@ -454,17 +628,19 @@
       };
       const stopBtn = h('button', { class: 'ghost', onclick: () => { if (running) stopFlag = true; else close(); } }, 'Отмена');
 
-      const ta = h('textarea', { placeholder: 'Выделите в Excel два столбца — «Тема» и «Домашнее задание» (ДЗ можно не копировать), скопируйте и вставьте сюда.\nОдна строка = один урок, пустые строки пропускаются.',
-        oninput: (e) => { text = e.target.value; drawTable(); } });
-      const wrap = h('div', {},
-        ta,
-        h('div', { class: 'row' },
-          h('label', {}, 'Начать с урока №', h('input', { type: 'number', min: 1, value: from, style: 'width:80px', oninput: (e) => { from = Number(e.target.value) || 1; drawTable(); } })),
-          h('label', {}, h('input', { type: 'checkbox', checked: keepFilled, onchange: (e) => { keepFilled = e.target.checked; drawTable(); } }), 'не трогать уже заполненные')),
-        h('div', { class: 'note' }, 'Строки ложатся по порядку: первая — в первый подходящий урок, вторая — в следующий и так далее. Срок ДЗ — следующий урок этой группы. Если у урока ДЗ уже есть, второе не добавляется. Сначала проверьте таблицу ниже.'),
+      const file = h('input', { type: 'file', accept: '.xls,.xlsx,.ods,.csv', style: 'display:none', onchange: (e) => { if (e.target.files[0]) readFile(e.target.files[0]); e.target.value = ''; } });
+      const ta = h('textarea', { placeholder: '…или выделите в Excel строки КТП (можно вместе с заголовком, столбцы «Тема», «Часы», «Домашнее задание»), скопируйте и вставьте сюда.',
+        style: 'min-height:90px',
+        oninput: (e) => { const t = e.target.value.replace(/\r/g, ''); if (!t.trim()) { grid = []; cols = null; draw(); return; }
+          loadGrid(t.split('\n').map((line) => line.split('\t').map((c) => c.replace(/^"([\s\S]*)"$/, '$1'))), 'вставка'); } });
+      const drop = h('div', { class: 'drop', onclick: () => file.click(),
+        ondragover: (e) => { e.preventDefault(); drop.classList.add('on'); }, ondragleave: () => drop.classList.remove('on'),
+        ondrop: (e) => { e.preventDefault(); drop.classList.remove('on'); if (e.dataTransfer.files[0]) readFile(e.dataTransfer.files[0]); } },
+        h('b', {}, 'Выбрать файл КТП'), ' (.xls, .xlsx, .csv) или перетащить сюда — файл никуда не загружается, читается прямо здесь', file);
+      const wrap = h('div', {}, drop, ta, area,
+        h('div', { class: 'note' }, 'Строки КТП ложатся в уроки по порядку. Тема на 2 часа — на 2 урока подряд; строки разделов пропускаются (если скрипт ошибся — «это раздел» / «это тема»). Срок ДЗ — следующий урок группы; если ДЗ у урока уже есть, второе не добавляется.'),
         table, h('div', { class: 'bar' }, bar), h('div', { class: 'act' }, stopBtn, goBtn));
-      drawTable();
-      setTimeout(() => ta.focus(), 0);
+      draw();
       return wrap;
     }
 
