@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Моя школа — учитель: темы и ДЗ из КТП и Excel
 // @namespace    tortik96.myschool.teacher
-// @version      0.3.0
+// @version      0.3.1
 // @description  На странице «Уроки» журнала: проставить темы и домашние задания из КТП во все уроки разом или вставить их столбцами из Excel
 // @match        https://edu.gosuslugi.ru/journal-app/page.lessons/*
 // @grant        none
@@ -397,7 +397,9 @@
       const norm = (v) => String(v == null ? '' : v).replace(/\s+/g, ' ').trim();
       const hoursOf = (v) => { const m = norm(v).match(/\d+(?:[.,]\d+)?/); return m ? Math.min(20, Math.max(0, Math.round(parseFloat(m[0].replace(',', '.'))))) : NaN; };
       const isSectionText = (t) => /^(раздел|модуль|глава|блок|часть)(\s|\d|[.:№IVX]|$)/i.test(t);
-      const isTrash = (t) => !t || /^(итого|всего|резерв(ное)? время$)/i.test(t) || /^\d+([.,]\d+)?$/.test(t);
+      const isTrash = (t) => !t || /^(итого|всего|резерв(ное)? время$|название темы$|тема( урока)?$)/i.test(t) || /^\d+([.,]\d+)?$/.test(t);
+      // «-», «нет» и заготовка шаблона вместо ДЗ = ДЗ нет
+      const cleanHW = (t) => (/^([-–—.]+|нет|не задано|без д\/?з|домашнее задание)$/i.test(t) ? '' : t);
 
       function guessCols(g) {
         const width = Math.max(0, ...g.map((r) => r.length));
@@ -438,7 +440,6 @@
         if (!cols || cols.topic < 0) return [];
         const out = [];
         let section = '';
-        const anyHours = cols.hours >= 0 && grid.some((r, i) => i > cols.header && hoursOf(r[cols.hours]) > 0);
         for (let i = cols.header + 1; i < grid.length; i++) {
           const r = grid[i];
           if (cols.section >= 0 && norm(r[cols.section])) section = norm(r[cols.section]);
@@ -452,9 +453,10 @@
           if (isTrash(text)) continue;
           const hours = cols.hours >= 0 ? hoursOf(r[cols.hours]) : NaN;
           let kind = 'topic';
-          if (cols.section < 0 && (isSectionText(text) || (anyHours && !(hours > 0)))) kind = 'section';
+          // пустые часы — не признак раздела (бывает, что у зачёта просто забыли поставить 1)
+          if (cols.section < 0 && isSectionText(text)) kind = 'section';
           if (flip.has(i)) kind = kind === 'topic' ? 'section' : 'topic';
-          out.push({ row: i, kind, text, hours, hw: cols.hw >= 0 ? norm(r[cols.hw]) : '', section });
+          out.push({ row: i, kind, text, hours, hw: cols.hw >= 0 ? cleanHW(norm(r[cols.hw])) : '', section });
         }
         // раздел из строки-заголовка действует до следующего раздела
         let cur = '';
@@ -638,7 +640,7 @@
         ondrop: (e) => { e.preventDefault(); drop.classList.remove('on'); if (e.dataTransfer.files[0]) readFile(e.dataTransfer.files[0]); } },
         h('b', {}, 'Выбрать файл КТП'), ' (.xls, .xlsx, .csv) или перетащить сюда — файл никуда не загружается, читается прямо здесь', file);
       const wrap = h('div', {}, drop, ta, area,
-        h('div', { class: 'note' }, 'Строки КТП ложатся в уроки по порядку. Тема на 2 часа — на 2 урока подряд; строки разделов пропускаются (если скрипт ошибся — «это раздел» / «это тема»). Срок ДЗ — следующий урок группы; если ДЗ у урока уже есть, второе не добавляется.'),
+        h('div', { class: 'note' }, 'Подходит шаблон КТП с сайта (№ | Тема | Кол-во часов | Домашнее задание) и таблицы «Номер урока | Тема урока | Домашнее задание». Строки КТП ложатся в уроки по порядку, тема на 2 часа — на 2 урока подряд; строки разделов («Раздел 1…») пропускаются (если скрипт ошибся — «это раздел» / «это тема»). Срок ДЗ — следующий урок группы; если ДЗ у урока уже есть, второе не добавляется.'),
         table, h('div', { class: 'bar' }, bar), h('div', { class: 'act' }, stopBtn, goBtn));
       draw();
       return wrap;
