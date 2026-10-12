@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Моя школа — учитель: темы и ДЗ из КТП и Excel
 // @namespace    tortik96.myschool.teacher
-// @version      0.3.1
+// @version      0.3.2
 // @description  На странице «Уроки» журнала: проставить темы и домашние задания из КТП во все уроки разом или вставить их столбцами из Excel
 // @match        https://edu.gosuslugi.ru/journal-app/page.lessons/*
 // @grant        none
@@ -385,6 +385,7 @@
       let srcName = '';
       let cols = null;        // {header, topic, hours, hw, section}
       let flip = new Set();   // строки, где учитель вручную поменял «тема ↔ раздел»
+      let merged = new Set(); // строки с объединёнными по горизонтали ячейками (так в КТП оформляют разделы)
       let from = (ls.find((l) => l.editable && !l.topic) || ls[0] || { lnum: 1 }).lnum;
       let startItem = 0;      // 0 = авто: столько тем пропустить, сколько уроков до «С урока №»
       let keepFilled = true, hwLast = true, withSection = false;
@@ -440,6 +441,14 @@
         if (!cols || cols.topic < 0) return [];
         const out = [];
         let section = '';
+        // столбец нумерации («№», «Номер урока»): у строк разделов номера нет
+        const data = grid.slice(cols.header + 1);
+        let numCol = -1;
+        for (let j = 0; j < Math.max(0, ...grid.map((r) => r.length)) && numCol < 0; j++) {
+          if (j === cols.topic || j === cols.hours || j === cols.hw) continue;
+          const vals = data.map((r) => norm(r[j])).filter(Boolean);
+          if (vals.length >= 3 && vals.filter((v) => /^\d{1,3}\.?$/.test(v)).length >= vals.length * 0.8) numCol = j;
+        }
         for (let i = cols.header + 1; i < grid.length; i++) {
           const r = grid[i];
           if (cols.section >= 0 && norm(r[cols.section])) section = norm(r[cols.section]);
@@ -447,14 +456,16 @@
           // раздел может стоять в объединённой ячейке левее темы
           if (!text) {
             const other = r.map(norm).filter((v, j) => v && j !== cols.hours && j !== cols.hw && !/^\d+([.,]\d+)?$/.test(v));
-            if (other.length === 1 && cols.section < 0) out.push({ row: i, kind: flip.has(i) ? 'topic' : 'section', text: other[0], hours: NaN, hw: '' });
+            if (other.length === 1 && cols.section < 0 && !isTrash(other[0])) out.push({ row: i, kind: flip.has(i) ? 'topic' : 'section', text: other[0], hours: NaN, hw: '' });
             continue;
           }
           if (isTrash(text)) continue;
           const hours = cols.hours >= 0 ? hoursOf(r[cols.hours]) : NaN;
           let kind = 'topic';
-          // пустые часы — не признак раздела (бывает, что у зачёта просто забыли поставить 1)
-          if (cols.section < 0 && isSectionText(text)) kind = 'section';
+          // раздел = объединённая на всю строку ячейка между темами, или строка без номера, часов и ДЗ.
+          // Одни пустые часы — не признак раздела (бывает, что у зачёта просто забыли поставить 1)
+          const bare = numCol >= 0 && !norm(r[numCol]) && !(hours > 0) && !(cols.hw >= 0 && norm(r[cols.hw]));
+          if (cols.section < 0 && (isSectionText(text) || merged.has(i) || bare)) kind = 'section';
           if (flip.has(i)) kind = kind === 'topic' ? 'section' : 'topic';
           out.push({ row: i, kind, text, hours, hw: cols.hw >= 0 ? cleanHW(norm(r[cols.hw])) : '', section });
         }
@@ -490,7 +501,8 @@
       }
 
       // ---------- загрузка ----------
-      function loadGrid(rows, name) {
+      function loadGrid(rows, name, mergedRows) {
+        merged = mergedRows || new Set();
         grid = rows.map((r) => (r || []).map(norm));
         while (grid.length && !grid[grid.length - 1].some(Boolean)) grid.pop();
         srcName = name; cols = guessCols(grid); flip = new Set();
@@ -523,7 +535,11 @@
             const rows = X.utils.sheet_to_json(wb.Sheets[n], { header: 1, raw: false, defval: '' });
             if (rows.slice(0, 20).some((r) => r.some((c) => /тема/i.test(String(c))))) { ws = wb.Sheets[n]; break; }
           }
-          loadGrid(X.utils.sheet_to_json(ws, { header: 1, raw: false, defval: '', blankrows: false }), f.name);
+          // пустые строки оставляем, чтобы номера строк совпадали с объединёнными ячейками листа
+          const top = ws['!ref'] ? X.utils.decode_range(ws['!ref']).s.r : 0;
+          const mergedRows = new Set();
+          for (const m of ws['!merges'] || []) if (m.e.c > m.s.c) for (let r = m.s.r; r <= m.e.r; r++) mergedRows.add(r - top);
+          loadGrid(X.utils.sheet_to_json(ws, { header: 1, raw: false, defval: '', blankrows: true }), f.name, mergedRows);
         } catch (e) { alert('Не получилось прочитать файл: ' + e.message); }
       }
 
