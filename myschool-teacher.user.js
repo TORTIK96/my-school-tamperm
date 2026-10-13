@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Моя школа — учитель: темы и ДЗ из КТП и Excel
 // @namespace    tortik96.myschool.teacher
-// @version      0.3.2
+// @version      0.3.3
 // @description  На странице «Уроки» журнала: проставить темы и домашние задания из КТП во все уроки разом или вставить их столбцами из Excel
 // @match        https://edu.gosuslugi.ru/journal-app/page.lessons/*
 // @grant        none
@@ -145,10 +145,30 @@
     return '';
   }
 
+  // «-» в КТП = «домашнего задания нет». Отдельной отметки для этого в журнале нет,
+  // поэтому записываем ДЗ с явным текстом (по умолчанию «Без ДЗ»). Пустая ячейка — ДЗ не ставим вовсе.
+  const NOHW_KEY = 'msxt_nohw';
+  let noHwText = (() => { try { const v = localStorage.getItem(NOHW_KEY); return v == null ? 'Без ДЗ' : v; } catch (_) { return 'Без ДЗ'; } })();
+  function setNoHw(v) { noHwText = String(v || '').trim(); try { localStorage.setItem(NOHW_KEY, noHwText); } catch (_) { /* не критично */ } }
+  const isNoHW = (t) => /^([-–—.]+|нет|не задано|без\s*(д\/?з|дз|домашнего задания))$/i.test(t);
+  function hwText(t) {
+    t = String(t == null ? '' : t).replace(/\s+/g, ' ').trim();
+    if (!t) return '';
+    return isNoHW(t) ? noHwText : t;
+  }
+  function noHwInput(onChange) {
+    return h('label', { title: 'что записать в ДЗ, если в КТП стоит «-»; оставьте пустым, чтобы такие уроки пропускать' }, 'Вместо «-» в ДЗ писать:',
+      h('input', { type: 'text', value: noHwText, placeholder: 'ничего не ставить', style: 'width:130px',
+        onchange: (e) => { setNoHw(e.target.value); onChange(); } }));
+  }
+
   // ДЗ из ответа get_lesson_topic: 0 или объект {id: {task, minutes, files:{..}, resources:{..}}}
   function planHometasks(r) {
     if (!r || !r.hometasks || r.hometasks === '0') return [];
-    return Object.values(r.hometasks).filter((t) => t && (String(t.task || '').trim() || (t.files && Object.keys(t.files).length)));
+    return Object.values(r.hometasks)
+      .filter(Boolean)
+      .map((t) => Object.assign({}, t, { task: hwText(t.task) }))
+      .filter((t) => t.task || (t.files && Object.keys(t.files).length));
   }
 
   function htItem(due, task, minutes, files, resources) {
@@ -373,6 +393,7 @@
           h('label', {}, h('input', { type: 'checkbox', checked: withHT, onchange: (e) => { withHT = e.target.checked; drawTable(); } }), 'и домашнее задание'),
           h('label', { title: 'выключите, чтобы перезаписать уже заполненные темы темами из КТП' }, h('input', { type: 'checkbox', checked: onlyEmpty, onchange: (e) => { onlyEmpty = e.target.checked; drawTable(); } }), 'только незаполненное'),
           h('label', { title: '0 — все' }, 'не больше', h('input', { type: 'number', min: 0, value: limit, style: 'width:70px', oninput: (e) => { limit = Math.max(0, Number(e.target.value) || 0); drawTable(); } }), 'уроков')),
+        h('div', { class: 'row' }, noHwInput(() => {})),
         h('div', { class: 'note warn' }, 'Первый раз попробуйте на 1–2 уроках (поле «не больше») и проверьте результат в журнале. Если у урока ДЗ уже есть, второе не добавляется.'),
         table, h('div', { class: 'bar' }, bar), h('div', { class: 'act' }, stopBtn, goBtn));
       drawTable();
@@ -399,8 +420,8 @@
       const hoursOf = (v) => { const m = norm(v).match(/\d+(?:[.,]\d+)?/); return m ? Math.min(20, Math.max(0, Math.round(parseFloat(m[0].replace(',', '.'))))) : NaN; };
       const isSectionText = (t) => /^(раздел|модуль|глава|блок|часть)(\s|\d|[.:№IVX]|$)/i.test(t);
       const isTrash = (t) => !t || /^(итого|всего|резерв(ное)? время$|название темы$|тема( урока)?$)/i.test(t) || /^\d+([.,]\d+)?$/.test(t);
-      // «-», «нет» и заготовка шаблона вместо ДЗ = ДЗ нет
-      const cleanHW = (t) => (/^([-–—.]+|нет|не задано|без д\/?з|домашнее задание)$/i.test(t) ? '' : t);
+      // заготовка шаблона «Домашнее задание» = пусто; «-» → текст «без ДЗ» (см. hwText)
+      const cleanHW = (t) => (/^домашнее задание$/i.test(t) ? '' : hwText(t));
 
       function guessCols(g) {
         const width = Math.max(0, ...g.map((r) => r.length));
@@ -576,7 +597,8 @@
               h('label', {}, h('input', { type: 'checkbox', checked: keepFilled, onchange: (e) => { keepFilled = e.target.checked; draw(); } }), 'не трогать заполненные уроки')),
             h('div', { class: 'row' },
               cols.hours >= 0 ? h('label', { title: 'тема на 2 часа идёт на 2 урока; ДЗ — только на последний из них' }, h('input', { type: 'checkbox', checked: hwLast, onchange: (e) => { hwLast = e.target.checked; draw(); } }), 'ДЗ многочасовой темы — на последний урок') : null,
-              h('label', {}, h('input', { type: 'checkbox', checked: withSection, onchange: (e) => { withSection = e.target.checked; draw(); } }), 'писать раздел перед темой'))) : null);
+              h('label', {}, h('input', { type: 'checkbox', checked: withSection, onchange: (e) => { withSection = e.target.checked; draw(); } }), 'писать раздел перед темой'),
+              cols.hw >= 0 ? noHwInput(draw) : null)) : null);
 
         if (!ps.length) { table.replaceChildren(grid.length ? h('div', { class: 'note warn' }, 'Нет уроков для записи: проверьте «С урока №», «взять тему КТП №» и столбец с темой.') : ''); return; }
         const extra = its.length - ((startItem || autoStart()) - 1) - ps.length;
@@ -656,7 +678,7 @@
         ondrop: (e) => { e.preventDefault(); drop.classList.remove('on'); if (e.dataTransfer.files[0]) readFile(e.dataTransfer.files[0]); } },
         h('b', {}, 'Выбрать файл КТП'), ' (.xls, .xlsx, .csv) или перетащить сюда — файл никуда не загружается, читается прямо здесь', file);
       const wrap = h('div', {}, drop, ta, area,
-        h('div', { class: 'note' }, 'Подходит шаблон КТП с сайта (№ | Тема | Кол-во часов | Домашнее задание) и таблицы «Номер урока | Тема урока | Домашнее задание». Строки КТП ложатся в уроки по порядку, тема на 2 часа — на 2 урока подряд; строки разделов («Раздел 1…») пропускаются (если скрипт ошибся — «это раздел» / «это тема»). Срок ДЗ — следующий урок группы; если ДЗ у урока уже есть, второе не добавляется.'),
+        h('div', { class: 'note' }, 'Подходит шаблон КТП с сайта (№ | Тема | Кол-во часов | Домашнее задание) и таблицы «Номер урока | Тема урока | Домашнее задание». Строки КТП ложатся в уроки по порядку, тема на 2 часа — на 2 урока подряд; строки разделов («Раздел 1…») пропускаются (если скрипт ошибся — «это раздел» / «это тема»). Срок ДЗ — следующий урок группы; если ДЗ у урока уже есть, второе не добавляется. «-» в столбце ДЗ записывается как «Без ДЗ» (текст можно поменять), пустая ячейка — ДЗ не ставится.'),
         table, h('div', { class: 'bar' }, bar), h('div', { class: 'act' }, stopBtn, goBtn));
       draw();
       return wrap;
