@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Моя школа — оценки, расписание, задания
 // @namespace    tortik96.myschool
-// @version      0.11.0
+// @version      0.11.1
 // @description  Удобный дневник поверх Госуслуг «Моя школа»: оценки со средним и средневзвешенным баллом, статистика и прогноз за четверть, расписание, домашние задания
 // @match        https://www.gosuslugi.ru/*
 // @grant        none
@@ -169,7 +169,15 @@
   }
 
   // ---------- расчёт ----------
-  const markType = (m) => types[m.id] || 'u';
+  // тип работы из журнала: учитель выбирает его при выставлении (work_type_code «Test» = контрольная)
+  function apiType(m) {
+    const code = String(m.work_type_code || ''), d = `${m.work_type_description || ''} ${m.work_kind || ''}`;
+    if (/^test$|control/i.test(code) || /контрольн/i.test(d)) return 'k';
+    if (/independ|selfwork/i.test(code) || /самостоят/i.test(d)) return 's';
+    return null;
+  }
+  // ручная пометка ученика важнее; без неё — тип из журнала; иначе обычная
+  const markType = (m) => types[m.id] || apiType(m) || 'u';
   // по спецификации вес — строка и может быть с запятой, например "1,8"
   const apiWeight = (m) => { const w = parseFloat(String(m.weight ?? '').replace(',', '.')); return w > 0 ? w : null; };
   const markWeight = (m) => apiWeight(m) || weightsFor(subjOf(m))[markType(m)] || 1;
@@ -677,12 +685,15 @@
       h('dl', {}, rows.map(([k, v]) => [h('dt', {}, k), h('dd', {}, v)])),
       m.comment ? h('p', { class: 'msx-note' }, 'Комментарий учителя: ', m.comment)
         : h('p', { class: 'msx-info' }, 'Комментария к оценке нет.'),
-      h('div', { class: 'msx-info', style: 'margin:0 0 6px' }, 'Тип работы для расчёта:'),
+      h('div', { class: 'msx-info', style: 'margin:0 0 6px' }, apiType(m) && !types[m.id]
+        ? `Тип из журнала: ${TYPES.find((x) => x.code === apiType(m)).name.toLowerCase()}. Можно поменять для расчёта:`
+        : 'Тип работы для расчёта:'),
       h('div', { class: 'msx-seg', role: 'group', 'aria-label': 'Тип работы' }, TYPES.map((x) => h('button', {
         'aria-pressed': x.code === t.code ? 'true' : 'false',
         onclick: (e) => {
           e.stopPropagation(); // иначе клик «всплывёт» и закроет только что перерисованное меню
-          if (x.code === 'u') delete types[m.id]; else types[m.id] = x.code;
+          // совпадает с журналом (или обычная без типа в журнале) — пометку не храним
+          if (x.code === (apiType(m) || 'u')) delete types[m.id]; else types[m.id] = x.code;
           save(LS_TYPES, types);
           if (rerender) rerender(m.id);
         },
