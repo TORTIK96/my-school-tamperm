@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Моя школа — оценки, расписание, задания
 // @namespace    tortik96.myschool
-// @version      0.9.1
-// @description  Удобный дневник поверх Госуслуг «Моя школа»: оценки со средним и средневзвешенным баллом, расписание, домашние задания
+// @version      0.10.0
+// @description  Удобный дневник поверх Госуслуг «Моя школа»: оценки со средним и средневзвешенным баллом, статистика и прогноз за четверть, расписание, домашние задания
 // @match        https://www.gosuslugi.ru/*
 // @grant        none
 // @run-at       document-idle
@@ -98,6 +98,7 @@
     const cls = ((res && res[0] && res[0].data) || [])[0];
     if (!cls || !cls.periods) throw new Error('Не удалось получить четверти класса. Обновите страницу и попробуйте снова.');
     const ps = cls.periods.map((p) => ({
+      id: p.period_id,
       name: `${p.period_num} ${p.period_type_descrioption || p.period_type_code}`,
       from: p.period_start_date, to: p.period_end_date, type: p.period_type_code || 'other',
       // основной учебный период класса (четверть, триместр или полугодие) — по флагу period_is_study,
@@ -184,14 +185,17 @@
     return [...bySubj.entries()].sort((a, b) => a[0].localeCompare(b[0], 'ru')).map(([subject, ms]) => {
       ms.sort((a, b) => a.mark_date.localeCompare(b.mark_date) || String(a.id).localeCompare(String(b.id)));
       let sum = 0, n = 0, wsum = 0, wtot = 0, ksum = 0, kn = 0;
+      const dist = { 5: 0, 4: 0, 3: 0, 2: 0 };
       for (const m of ms) {
         const w = markWeight(m);
         for (const v of markValues(m)) { // двойная оценка 4/5 считается как две
           sum += v; n++; wsum += v * w; wtot += w;
           if (markType(m) === 'k') { ksum += v; kn++; }
+          dist[Math.max(2, v)]++;
         }
       }
-      return { subject, marks: ms, avg: n ? sum / n : null, wavg: wtot ? wsum / wtot : null, kavg: kn ? ksum / kn : null };
+      return { subject, marks: ms, n, sum, wsum, wtot, dist,
+        avg: n ? sum / n : null, wavg: wtot ? wsum / wtot : null, kavg: kn ? ksum / kn : null };
     });
   }
 
@@ -338,7 +342,55 @@
   .msx-hwtext{white-space:pre-line;overflow-wrap:anywhere;font-size:14px}
   .msx-hwmeta{font-size:12px;color:var(--muted);margin-top:2px}
   .msx-more{display:block;margin:6px auto 0;font:800 14px 'Noto Sans',Arial,sans-serif;color:var(--ink);background:var(--card);border:0;border-radius:999px;padding:10px 20px;cursor:pointer;box-shadow:0 3px 0 var(--line)}
-  @media (max-width:560px){
+  .msx-kpis{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin-bottom:14px}
+  .msx-kpi{background:var(--card);border-radius:24px;padding:14px 18px;box-shadow:0 4px 0 var(--line),0 8px 22px rgba(27,36,72,.06)}
+  .msx-kpi span{display:block;font-size:12px;font-weight:800;color:var(--muted)}
+  .msx-kpi b{display:block;font-size:34px;line-height:1.15;font-weight:900}
+  .msx-kpi small{display:block;font-size:12px;color:var(--muted)}
+  .msx-card{background:var(--card);border-radius:24px;padding:16px 18px;margin-bottom:14px;box-shadow:0 4px 0 var(--line),0 8px 22px rgba(27,36,72,.06)}
+  .msx-card h3{margin:0 0 10px;font-size:17px;font-weight:900}
+  .msx-cardh{display:flex;flex-wrap:wrap;gap:8px 12px;align-items:center;justify-content:space-between;margin-bottom:6px}
+  .msx-cardh h3{margin:0}
+  .msx-sel{width:auto;max-width:100%}
+  .msx-dist{display:flex;gap:2px;height:22px;border-radius:999px;overflow:hidden;background:var(--soft)}
+  .msx-dist span{background:var(--c);min-width:6px}
+  .msx-distl{display:flex;flex-wrap:wrap;gap:6px 18px;margin-top:10px;font-size:13px}
+  .msx-distl span{display:inline-flex;align-items:center;gap:6px}
+  .msx-distl i{width:12px;height:12px;border-radius:4px;background:var(--c)}
+  .msx-fc{display:grid;grid-template-columns:auto minmax(0,1fr);gap:12px;align-items:start;padding:10px 0;border-top:1px solid var(--line)}
+  .msx-fc .msx-m{cursor:default;min-width:42px;height:44px}.msx-fc .msx-m:hover{transform:none}
+  .msx-fc .msx-pill{margin-left:8px;vertical-align:1px}
+  .msx-fcl{font-size:13px;margin-top:2px}
+  .msx-legend2{display:flex;flex-wrap:wrap;gap:6px 16px;font-size:13px;margin:4px 0 6px}
+  .msx-legend2 span{display:inline-flex;align-items:center;gap:6px}
+  .sw{display:inline-block;width:16px;height:3px;border-radius:2px;background:var(--orange)}
+  .sw.ctx{background:var(--muted)}
+  .msx-chartbox{position:relative}
+  .msx-svg{display:block;width:100%;height:auto;overflow:visible}
+  .msx-svg .gl{stroke:var(--line);stroke-width:1}
+  .msx-svg .gl.th{stroke-dasharray:3 4}
+  .msx-svg .ax{fill:var(--muted);font:600 11px 'Noto Sans',Arial,sans-serif}
+  .msx-svg .lbl{fill:var(--ink);font:800 12px 'Noto Sans',Arial,sans-serif}
+  .msx-svg .ln{fill:none;stroke-width:2;stroke-linejoin:round;stroke-linecap:round}
+  .msx-svg .ln.main{stroke:var(--orange)}.msx-svg .ln.ctx{stroke:var(--muted);opacity:.7}
+  .msx-svg .dot{stroke:var(--card);stroke-width:2}
+  .msx-svg .dot.main{fill:var(--orange)}.msx-svg .dot.ctx{fill:var(--muted)}
+  .msx-svg .cross{stroke:var(--ink);stroke-width:1;opacity:.35}
+  .msx-tip{position:absolute;top:0;width:170px;background:var(--ink);color:var(--paper);font-size:12px;padding:8px 10px;border-radius:12px;pointer-events:none;box-shadow:0 6px 16px rgba(0,0,0,.25)}
+  .msx-tip b{display:block;margin-bottom:2px}
+  .msx-tip div{display:flex;align-items:center;gap:6px}
+  .msx-det{margin-top:8px;font-size:13px}
+  .msx-det summary{cursor:pointer;color:var(--muted);font-weight:700}
+  .msx-tbl{width:100%;border-collapse:collapse;font-size:13px;margin-top:8px}
+  .msx-tbl th{text-align:left;color:var(--muted);font-size:12px;font-weight:800;padding:6px 8px 6px 0;border-bottom:1px solid var(--line)}
+  .msx-tbl td{padding:7px 8px 7px 0;border-bottom:1px solid var(--line);vertical-align:top}
+  .msx-tbl tr.df td:last-child{font-weight:700}
+  .msx-site{cursor:help;text-decoration:underline dotted;text-underline-offset:2px}
+  @media (max-width:860px){.msx-kpis{grid-template-columns:repeat(2,minmax(0,1fr))}}
+  @media (max-width:560px){.msx-kpi{padding:12px 14px;border-radius:20px}.msx-kpi b{font-size:28px}.msx-card{padding:14px;border-radius:20px}
+    .msx-tabs button{font-size:12.5px;padding:12px 2px}
+    .msx-tbl th:nth-child(4),.msx-tbl td:nth-child(4){font-size:12px}}
+    @media (max-width:560px){
     .msx-tabs{position:fixed;left:10px;right:10px;bottom:calc(10px + env(safe-area-inset-bottom,0px));z-index:3;display:flex;margin:0;box-shadow:0 6px 22px rgba(27,36,72,.28)}
     .msx-tabs button{flex:1;padding:12px 4px}
     .msx-wrap{padding-bottom:100px}
@@ -349,8 +401,9 @@
   `;
 
   let root, ctx, student, periods, period, data, pop = null;
+  let siteStat = null; // средние баллы со страницы статистики Госуслуг (для сравнения)
   const APP = !!window.MSX_APP; // внутри Android-приложения
-  const TABS = [['marks', 'Оценки'], ['schedule', 'Расписание'], ['hw', 'Задания']];
+  const TABS = [['marks', 'Оценки'], ['stats', 'Статистика'], ['schedule', 'Расписание'], ['hw', 'Задания']];
   let tab = load('msx_tab', 'marks');
   if (!TABS.some(([k]) => k === tab)) tab = 'marks';
   let weekStart = monday(new Date());
@@ -447,6 +500,7 @@
   function showTab(k) {
     tab = k; save('msx_tab', k);
     if (k === 'marks') return data ? renderTable() : reload();
+    if (k === 'stats') return data ? renderStats() : reload();
     if (k === 'schedule') return loadWeek();
     return loadHw();
   }
@@ -635,7 +689,8 @@
         h('div', { class: 'msx-avg plain', 'aria-label': 'Средний балл ' + fmt(r.avg) }, h('b', { class: grade(r.avg) }, fmt(r.avg)),
           r.kavg != null ? h('span', { class: 'msx-kr' }, 'по КР ' + fmt(r.kavg)) : null),
         h('div', { class: 'msx-avg wt', 'aria-label': 'Средневзвешенный балл ' + fmt(r.wavg),
-          title: weighted ? 'С учётом весов' : 'Веса не заданы — совпадает со средним' }, h('b', { class: grade(r.wavg) }, fmt(r.wavg))));
+          title: weighted ? 'С учётом весов' : 'Веса не заданы — совпадает со средним' }, h('b', { class: grade(r.wavg) }, fmt(r.wavg)),
+          siteBadge(r)));
       if (open) {
         row.append(h('div', { class: 'msx-wpanel' },
           weightInputs(w, (code, v) => { W.bySubject[r.subject] = Object.assign({}, w, { [code]: v }); saveW(); renderTable(); }),
@@ -658,8 +713,258 @@
       renderMessage('Загружаю оценки…');
       data = await fetchMarks(student.student_id, period);
       learnSubjects(data.lessons); learnSubjects(data.marks);
+      // балл, который показывает сам сайт, — для сравнения; если не получилось, просто без него
+      siteStat = null;
+      try { siteStat = await fetchSiteStat(student.student_id, period); } catch (_) { siteStat = null; }
       if (tab === 'marks') renderTable();
+      else if (tab === 'stats') renderStats();
     } catch (e) { renderMessage(e.message || String(e), true); }
+  }
+
+  // ---------- статистика сайта (для сравнения) ----------
+  // Госуслуги считают свой средний балл раз в несколько дней (ночью), без весов,
+  // а общий балл — как среднее средних по предметам. Берём его, чтобы показать рядом и объяснить разницу.
+  const round1 = (x) => Math.round(x * 10) / 10;
+  async function fetchSiteStat(studentId, per) {
+    if (!per || !per.id) return null;
+    const today = new Date();
+    const ids = intervalIds(today, today);
+    const res = await api('/v1/datamart', ids.map((i) => ({ interval_id: i, obj_type: 'student_statsubject', student_id: studentId })));
+    const row = (res || []).map((b) => (b.data || [])[0]).find((d) => d && d.period_id === per.id && Array.isArray(d.student));
+    if (!row) return null;
+    const bySubj = new Map();
+    for (const s of row.student) {
+      const total = parseFloat(String(s.total).replace(',', '.'));
+      if (total > 0) bySubj.set(s.subject_name, { total, id: s.subject_id });
+    }
+    // когда сайт пересчитывал: дата есть только в статистике «по неделям» — спрашиваем по одному предмету
+    let at = null;
+    const any = row.student.find((s) => s.subject_id);
+    if (any) {
+      try {
+        const w = await api('/v1/datamart', [{ interval_id: ids[0], obj_type: 'student_statsubject_by_week', student_id: studentId, obj_id: any.subject_id }]);
+        at = (((w || [])[0] || {}).data || [])[0]?.datetime || null;
+      } catch (_) { /* без даты пересчёта */ }
+    }
+    if (at) at = String(at).slice(0, 16);
+    else { const m = monday(new Date()); at = `${isoD(m)} 06:00`; } // обычно пересчёт ночью в понедельник
+    return { bySubj, total: parseFloat(String(row.total).replace(',', '.')) || null, at };
+  }
+
+  // почему наш балл по предмету не совпадает с сайтом (сайт округляет до десятых)
+  function whyDiff(r, s) {
+    if (!s || r.wavg == null) return null;
+    if (Math.abs(round1(r.wavg) - s.total) < 0.05) return null;
+    const simple = (ms) => { let a = 0, n = 0; for (const m of ms) for (const v of markValues(m)) { a += v; n++; } return n ? a / n : null; };
+    const fresh = siteStat && siteStat.at ? r.marks.filter((m) => m.create_datetime && String(m.create_datetime).slice(0, 16) > siteStat.at) : [];
+    const older = r.marks.filter((m) => !fresh.includes(m));
+    const weighted = r.avg != null && Math.abs(r.avg - r.wavg) > 0.005;
+    if (weighted && Math.abs(round1(r.avg) - s.total) < 0.05) return 'сайт не учитывает веса оценок';
+    if (fresh.length) {
+      const o = simple(older);
+      if (o != null && Math.abs(round1(o) - s.total) < 0.05) return `сайт ещё не учёл ${plural(fresh.length, ['новую оценку', 'новые оценки', 'новых оценок'], true)}` + (weighted ? ' и не учитывает веса' : '');
+    }
+    return 'не сходится с оценками — возможно, оценку исправили в журнале';
+  }
+
+  function siteBadge(r) {
+    const s = siteStat && siteStat.bySubj.get(r.subject);
+    const why = whyDiff(r, s);
+    if (!why) return null;
+    return h('span', { class: 'msx-kr msx-site', title: `На странице статистики Госуслуг: ${fmt(s.total)} — ${why}` }, 'сайт ' + fmt(s.total));
+  }
+
+  // ---------- прогноз оценки за период ----------
+  // «1 оценка», «2 оценки», «5 оценок»
+  function plural(n, forms, withNum) {
+    const a = Math.abs(n) % 100, b = a % 10;
+    const f = a > 10 && a < 20 ? forms[2] : b === 1 ? forms[0] : b >= 2 && b <= 4 ? forms[1] : forms[2];
+    return withNum === false ? f : `${n} ${f}`;
+  }
+  const FIVES = ['пятёрка', 'пятёрки', 'пятёрок'], FOURS = ['четвёрка', 'четвёрки', 'четвёрок'];
+  const THREES = ['тройка', 'тройки', 'троек'], TWOS = ['двойка', 'двойки', 'двоек'];
+  const NAMES = { 5: FIVES, 4: FOURS, 3: THREES, 2: TWOS };
+  // Обычное правило: от 4,5 — «5», от 3,5 — «4», от 2,5 — «3». В положении школы может быть иначе.
+  const toGrade = (x) => (x == null ? null : x >= 4.5 - 1e-9 ? 5 : x >= 3.5 - 1e-9 ? 4 : x >= 2.5 - 1e-9 ? 3 : 2);
+
+  function forecast(r) {
+    if (!r.wtot) return null;
+    const S = r.wsum, T = r.wtot, eps = 1e-9, g = toGrade(r.wavg);
+    // сколько оценок v (вес 1) нужно, чтобы средний дошёл до t; и сколько оценок v можно получить, не упав ниже t
+    const need = (t, v) => Math.max(0, Math.ceil((t * T - S) / (v - t) - eps));
+    const keep = (t, v) => Math.floor((S - t * T) / (t - v) + eps);
+    const out = { grade: g, lines: [], edge: false };
+    if (g < 5) {
+      const n = need(g + 0.5, 5);
+      out.lines.push(`до ${g + 1}: ${n > 30 ? 'больше 30 пятёрок' : plural(n, FIVES) + ' подряд'}`);
+    }
+    if (g >= 3) {
+      const t = g - 0.5, lower = g - 1, k1 = keep(t, lower), k2 = lower > 2 ? keep(t, lower - 1) : -1;
+      if (k1 <= 0) { out.lines.push(`на грани: одна ${NAMES[lower][0]} — и выйдет ${lower}`); out.edge = true; } else {
+        out.lines.push(`запас: ${plural(k1, NAMES[lower])}${k2 > 0 ? ` или ${plural(k2, NAMES[lower - 1])}` : ''} — и всё равно ${g}`);
+      }
+    }
+    if (g < 5 && r.wavg >= g + 0.4) out.edge = true; // почти дотянули до следующей
+    if (r.n < 3) out.lines.push('мало оценок — для аттестации обычно нужно не меньше 3');
+    return out;
+  }
+
+  // ---------- вкладка «Статистика» ----------
+  let statSubj = load('msx_stat_subj', '');
+
+  // средний «на конец каждой недели» периода: как менялся балл
+  function weeklySeries(marks) {
+    const start = monday(toD(period.from));
+    const end = new Date(Math.min(toD(period.to).getTime(), Date.now()));
+    const sorted = marks.slice().sort((a, b) => a.mark_date.localeCompare(b.mark_date));
+    const pts = [];
+    let i = 0, ws = 0, wt = 0;
+    for (let d = start; d <= end; d = new Date(d.getTime() + 7 * DAY)) {
+      const sun = isoD(new Date(d.getTime() + 6 * DAY));
+      while (i < sorted.length && sorted[i].mark_date <= sun) {
+        const w = markWeight(sorted[i]);
+        for (const v of markValues(sorted[i])) { ws += v * w; wt += w; }
+        i++;
+      }
+      pts.push({ week: isoD(d), v: wt ? ws / wt : null });
+    }
+    return pts;
+  }
+
+  function lineChart(series) {
+    // series: [{name, pts:[{week,v}], cls}]
+    // рисуем в реальных пикселях ширины карточки, чтобы подписи не раздувались на широком экране
+    const vw = Math.min(window.innerWidth, 1400);
+    const W = Math.max(300, vw - (window.innerWidth <= 560 ? 24 + 28 : 40 + 36)), H = 230, L = 34, R = 46, Tp = 12, B = 26;
+    const weeks = series[0].pts.map((p) => p.week);
+    const vals = series.flatMap((s) => s.pts.map((p) => p.v)).filter((v) => v != null);
+    const lo = Math.max(2, Math.floor((Math.min(...vals) - 0.15) * 2) / 2), hi = 5;
+    const x = (i) => L + (weeks.length < 2 ? (W - L - R) / 2 : (i * (W - L - R)) / (weeks.length - 1));
+    const y = (v) => Tp + ((hi - v) * (H - Tp - B)) / (hi - lo || 1);
+    const NS = 'http://www.w3.org/2000/svg';
+    const el = (tag, attrs, text) => { const e = document.createElementNS(NS, tag); for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v); if (text != null) e.textContent = text; return e; };
+    const svg = el('svg', { viewBox: `0 0 ${W} ${H}`, class: 'msx-svg', role: 'img', 'aria-label': 'График среднего балла по неделям' });
+    for (let g = hi; g >= lo - 1e-9; g -= 0.5) {
+      svg.append(el('line', { x1: L, x2: W - R, y1: y(g), y2: y(g), class: g === 4.5 || g === 3.5 || g === 2.5 ? 'gl th' : 'gl' }));
+      svg.append(el('text', { x: L - 6, y: y(g) + 4, class: 'ax', 'text-anchor': 'end' }, String(g).replace('.', ',')));
+    }
+    const step = Math.max(1, Math.ceil(weeks.length / Math.max(3, Math.floor((W - L - R) / 70))));
+    weeks.forEach((w, i) => { if (i % step === 0 || i === weeks.length - 1) svg.append(el('text', { x: x(i), y: H - 6, class: 'ax', 'text-anchor': 'middle' }, ddmm(w))); });
+    for (const s of series) {
+      let d = '', pen = false;
+      s.pts.forEach((p, i) => { if (p.v == null) { pen = false; return; } d += `${pen ? 'L' : 'M'}${x(i).toFixed(1)},${y(p.v).toFixed(1)}`; pen = true; });
+      svg.append(el('path', { d, class: `ln ${s.cls}` }));
+      s.pts.forEach((p, i) => { if (p.v != null) svg.append(el('circle', { cx: x(i), cy: y(p.v), r: 4, class: `dot ${s.cls}` })); });
+      // подпись у последней точки — чтобы не искать в легенде
+      const li = s.pts.map((p) => p.v).lastIndexOf(s.pts.filter((p) => p.v != null).slice(-1)[0]?.v);
+      if (li >= 0) svg.append(el('text', { x: x(li) + 8, y: y(s.pts[li].v) + 4, class: 'lbl' }, fmt(round1(s.pts[li].v))));
+    }
+    // наведение: вертикальная линия и подсказка с балом на эту неделю
+    const cross = el('line', { y1: Tp, y2: H - B, class: 'cross', visibility: 'hidden' });
+    svg.append(cross);
+    const tip = h('div', { class: 'msx-tip', hidden: '' });
+    const hit = el('rect', { x: L - 10, y: 0, width: W - L - R + 20, height: H, fill: 'transparent' });
+    svg.append(hit);
+    const showAt = (clientX) => {
+      const r = svg.getBoundingClientRect();
+      const sx = ((clientX - r.left) / r.width) * W;
+      const i = Math.max(0, Math.min(weeks.length - 1, Math.round(((sx - L) / (W - L - R)) * (weeks.length - 1))));
+      cross.setAttribute('x1', x(i)); cross.setAttribute('x2', x(i)); cross.setAttribute('visibility', 'visible');
+      tip.replaceChildren(h('b', {}, `неделя с ${ddmm(weeks[i])}`),
+        ...series.map((s) => h('div', {}, h('i', { class: `sw ${s.cls}` }), `${s.name}: ${s.pts[i].v == null ? 'нет оценок' : fmt(round1(s.pts[i].v))}`)));
+      tip.hidden = false;
+      const px = (x(i) / W) * r.width;
+      tip.style.left = Math.min(Math.max(0, px - 80), r.width - 170) + 'px';
+    };
+    hit.addEventListener('pointermove', (e) => showAt(e.clientX));
+    hit.addEventListener('pointerdown', (e) => showAt(e.clientX));
+    hit.addEventListener('pointerleave', () => { cross.setAttribute('visibility', 'hidden'); tip.hidden = true; });
+    return h('div', { class: 'msx-chartbox' }, svg, tip);
+  }
+
+  let statResize = null;
+  window.addEventListener('resize', () => {
+    clearTimeout(statResize);
+    statResize = setTimeout(() => { if (tab === 'stats' && data && panelOpen() && !pop) renderStats(); }, 250);
+  });
+
+  function renderStats() {
+    rerender = null;
+    const rows = summarize(data.marks).filter((r) => r.n > 0);
+    const body = h('div', {});
+    if (!rows.length) {
+      body.append(h('p', {}, 'За этот период оценок нет. Выберите другой период выше.'));
+      return renderShell(body, marksControls());
+    }
+    // --- плитки ---
+    const S = rows.reduce((a, r) => a + r.wsum, 0), T = rows.reduce((a, r) => a + r.wtot, 0);
+    const pooled = T ? S / T : null;
+    const ofSubj = rows.reduce((a, r) => a + r.wavg, 0) / rows.length;
+    const dist = { 5: 0, 4: 0, 3: 0, 2: 0 };
+    for (const r of rows) for (const k of [5, 4, 3, 2]) dist[k] += r.dist[k];
+    const nMarks = dist[5] + dist[4] + dist[3] + dist[2];
+    const abs = absencesBySubject(data.lessons, period.from, period.to);
+    const absAll = [...abs.values()].flat();
+    const absBy = { 'Б': 0, 'П': 0, 'Н': 0, 'О': 0 };
+    for (const l of absAll) absBy[absInfo(l).letter]++;
+    const kpi = (label, value, sub, cls) => h('div', { class: 'msx-kpi' }, h('span', {}, label), h('b', { class: cls || '' }, value), sub ? h('small', {}, sub) : null);
+    body.append(h('div', { class: 'msx-kpis' },
+      kpi('Средний балл', fmt(round1(pooled)), 'по всем оценкам, с весами'),
+      kpi('По предметам', fmt(round1(ofSubj)), siteStat && siteStat.total ? `на сайте: ${fmt(siteStat.total)}` : 'среднее средних — так считает сайт'),
+      kpi('Оценок', String(nMarks), `${rows.length} ${plural(rows.length, ['предмет', 'предмета', 'предметов'], false)}`),
+      kpi('Пропусков', String(absAll.length), absAll.length ? Object.entries(absBy).filter(([, n]) => n)
+        .map(([k, n]) => `${{ 'Б': 'по болезни', 'П': 'уважит.', 'Н': 'неуважит.', 'О': 'опоздания' }[k]} ${n}`).join(' · ') : 'нет')));
+
+    // --- распределение оценок ---
+    body.append(h('section', { class: 'msx-card' }, h('h3', {}, 'Какие оценки'),
+      h('div', { class: 'msx-dist', role: 'img', 'aria-label': [5, 4, 3, 2].map((k) => `${k}: ${dist[k]}`).join(', ') },
+        [5, 4, 3, 2].filter((k) => dist[k]).map((k) => h('span', { class: `g${k}`, style: `flex:${dist[k]}`, title: `«${k}»: ${dist[k]}` }))),
+      h('div', { class: 'msx-distl' }, [5, 4, 3, 2].map((k) => h('span', {}, h('i', { class: `g${k}` }), `«${k}» — ${dist[k]} (${nMarks ? Math.round((dist[k] / nMarks) * 100) : 0}%)`)))));
+
+    // --- прогноз ---
+    const fc = rows.map((r) => ({ r, f: forecast(r) })).filter((x) => x.f)
+      .sort((a, b) => a.f.grade - b.f.grade || (b.f.edge - a.f.edge) || a.r.wavg - b.r.wavg);
+    body.append(h('section', { class: 'msx-card' }, h('h3', {}, `Что выходит за ${period.name.replace(/^\d+ /, '').toLowerCase() === 'весь год' ? 'год' : period.name}`),
+      h('p', { class: 'msx-info' }, 'Сначала предметы, где оценка ниже или на грани. Считаем по обычному правилу: от 4,5 — «5», от 3,5 — «4», от 2,5 — «3»; новые оценки — с весом 1. В положении школы правило может быть другим — спорную оценку решает учитель.'),
+      fc.map(({ r, f }) => h('div', { class: 'msx-fc' },
+        h('span', { class: `msx-m ${grade(f.grade)}` }, h('b', {}, String(f.grade))),
+        h('div', {}, h('div', { class: 'msx-lsub' }, r.subject, f.edge ? h('span', { class: 'msx-pill' }, 'на грани') : null),
+          h('div', { class: 'msx-hwmeta' }, `сейчас ${fmt(r.wavg)} · ${plural(r.n, ['оценка', 'оценки', 'оценок'])}`),
+          f.lines.map((t) => h('div', { class: 'msx-fcl' }, t)))))));
+
+    // --- график по неделям ---
+    const subjects = rows.map((r) => r.subject);
+    if (statSubj && !subjects.includes(statSubj)) statSubj = '';
+    const allPts = weeklySeries(data.marks);
+    const series = [{ name: 'Все предметы', pts: allPts, cls: statSubj ? 'ctx' : 'main' }];
+    if (statSubj) series.push({ name: statSubj, pts: weeklySeries(data.marks.filter((m) => subjOf(m) === statSubj)), cls: 'main' });
+    const chartCard = h('section', { class: 'msx-card' },
+      h('div', { class: 'msx-cardh' }, h('h3', {}, 'Как менялся средний балл'),
+        h('select', { class: 'msx-inp msx-sel', 'aria-label': 'Предмет на графике', onchange: (e) => { statSubj = e.target.value; save('msx_stat_subj', statSubj); renderStats(); } },
+          h('option', { value: '', selected: !statSubj ? '' : null }, 'Все предметы'),
+          subjects.map((s) => h('option', { value: s, selected: s === statSubj ? '' : null }, s)))),
+      h('div', { class: 'msx-legend2' }, series.map((s) => h('span', {}, h('i', { class: `sw ${s.cls}` }), s.name))),
+      allPts.some((p) => p.v != null) ? lineChart(series) : h('p', { class: 'msx-info' }, 'Мало данных для графика.'),
+      h('p', { class: 'msx-info', style: 'margin:8px 0 0' }, 'Точка — средний балл (с весами) на конец недели с учётом всех оценок с начала периода.'),
+      h('details', { class: 'msx-det' }, h('summary', {}, 'Таблица по неделям'),
+        h('table', { class: 'msx-tbl' }, h('thead', {}, h('tr', {}, h('th', {}, 'Неделя'), series.map((s) => h('th', {}, s.name)))),
+          h('tbody', {}, allPts.map((p, i) => h('tr', {}, h('td', {}, `с ${ddmm(p.week)}`), series.map((s) => h('td', {}, fmt(s.pts[i].v == null ? null : round1(s.pts[i].v))))))))));
+    body.append(chartCard);
+
+    // --- сравнение с сайтом ---
+    if (siteStat) {
+      const cmp = rows.map((r) => ({ r, s: siteStat.bySubj.get(r.subject) })).filter((x) => x.s);
+      const diffs = cmp.map((x) => ({ ...x, why: whyDiff(x.r, x.s) }));
+      const nDiff = diffs.filter((x) => x.why).length;
+      body.append(h('section', { class: 'msx-card' }, h('h3', {}, 'Сравнение со статистикой Госуслуг'),
+        h('p', { class: 'msx-info' }, `Сайт пересчитывал баллы ${stamp(siteStat.at + ':00') || 'недавно'}. Он не учитывает веса, а новые оценки появляются у него с задержкой. ` +
+          (nDiff ? `Не совпадает: ${nDiff} из ${cmp.length}.` : 'Сейчас всё совпадает.')),
+        h('table', { class: 'msx-tbl' },
+          h('thead', {}, h('tr', {}, h('th', {}, 'Предмет'), h('th', {}, 'У нас'), h('th', {}, 'На сайте'), h('th', {}, 'Почему отличается'))),
+          h('tbody', {}, diffs.map(({ r, s, why }) => h('tr', { class: why ? 'df' : '' },
+            h('td', {}, r.subject), h('td', {}, fmt(round1(r.wavg))), h('td', {}, fmt(s.total)), h('td', {}, why || 'совпадает')))))));
+    }
+    renderShell(body, marksControls());
   }
 
   // ---------- вкладка «Расписание» ----------
