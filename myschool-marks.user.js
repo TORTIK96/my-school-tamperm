@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Моя школа — оценки, расписание, задания
 // @namespace    tortik96.myschool
-// @version      0.11.1
+// @version      0.11.2
 // @description  Удобный дневник поверх Госуслуг «Моя школа»: оценки со средним и средневзвешенным баллом, статистика и прогноз за четверть, расписание, домашние задания
 // @match        https://www.gosuslugi.ru/*
 // @grant        none
@@ -485,6 +485,15 @@
     .msx-top button:active,.msx-wbtn:active,.msx-more:active{transform:scale(.95)}
     .msx-chk{transition:background-color .2s ease,border-color .2s ease,transform .15s ease}.msx-chk:active{transform:scale(.85)}
     .msx-hw{transition:opacity .25s ease}}
+    .msx-cls{background:var(--soft);border-radius:18px;padding:10px 12px;margin:0 0 12px}
+  .msx-clsh{display:flex;justify-content:space-between;align-items:baseline;gap:8px;margin-bottom:6px;font-size:13px}
+  .msx-clsh span{color:var(--muted);font-size:12px;font-weight:700}
+  .msx-clsr{display:grid;grid-template-columns:auto minmax(0,1fr) 60px auto;gap:8px;align-items:center;padding:4px 6px;border-radius:12px;font-size:13px}
+  .msx-clsr .msx-m{cursor:default;min-width:30px;height:30px;border-radius:10px}.msx-clsr .msx-m b{font-size:15px}.msx-clsr .msx-m:hover{transform:none}
+  .msx-clsr i{height:6px;border-radius:999px;background:linear-gradient(90deg,var(--muted) var(--w),var(--line) var(--w));opacity:.7}
+  .msx-clsr small{color:var(--muted);font-weight:700;min-width:34px;text-align:right}
+  .msx-clsr.me{background:var(--card);font-weight:800}.msx-clsr.me i{background:linear-gradient(90deg,var(--orange) var(--w),var(--line) var(--w));opacity:1}
+  .msx-pop{max-height:calc(100vh - 16px);overflow:auto}
     @media (max-width:560px){
     .msx-tabs{position:fixed;left:10px;right:10px;bottom:calc(10px + env(safe-area-inset-bottom,0px));z-index:3;display:flex;margin:0;box-shadow:0 6px 22px rgba(27,36,72,.28)}
     .msx-tabs button{flex:1;padding:12px 4px}
@@ -685,6 +694,7 @@
       h('dl', {}, rows.map(([k, v]) => [h('dt', {}, k), h('dd', {}, v)])),
       m.comment ? h('p', { class: 'msx-note' }, 'Комментарий учителя: ', m.comment)
         : h('p', { class: 'msx-info' }, 'Комментария к оценке нет.'),
+      classStats(m),
       h('div', { class: 'msx-info', style: 'margin:0 0 6px' }, apiType(m) && !types[m.id]
         ? `Тип из журнала: ${TYPES.find((x) => x.code === apiType(m)).name.toLowerCase()}. Можно поменять для расчёта:`
         : 'Тип работы для расчёта:'),
@@ -700,6 +710,25 @@
       }, SEG[x.code]))));
     placePop(el, anchor, m.id);
     el.querySelector('.msx-seg button[aria-pressed="true"]').focus();
+  }
+
+  // Как на сайте: за контрольную приходят оценки класса — показываем только сводку
+  // (сколько учеников получили каждую оценку и где вы), без чьих-либо данных.
+  function classStats(m) {
+    const list = Array.isArray(m.students_test) ? m.students_test : [];
+    const vals = list.map((x) => ({ v: parseInt(x.mark_value1, 10), me: x.student_id === m.student_id })).filter((x) => x.v >= 1 && x.v <= 5);
+    if (vals.length < 2) return null;
+    const mine = (vals.find((x) => x.me) || {}).v ?? parseInt(m.mark_value1, 10);
+    const avg = vals.reduce((a, x) => a + x.v, 0) / vals.length;
+    const rows = [5, 4, 3, 2, 1].map((g) => ({ g, n: vals.filter((x) => x.v === g).length })).filter((r) => r.n);
+    return h('div', { class: 'msx-cls' },
+      h('div', { class: 'msx-clsh' }, h('b', {}, 'Статистика по классу'), h('span', {}, `средняя ${fmt(round1(avg))}`)),
+      rows.map((r) => h('div', { class: `msx-clsr${r.g === mine ? ' me' : ''}` },
+        h('span', { class: `msx-m ${grade(r.g)}` }, h('b', {}, String(r.g))),
+        h('span', {}, plural(r.n, ['ученик', 'ученика', 'учеников']) + (r.g === mine ? ' — вы' : '')),
+        h('i', { style: `--w:${Math.round((r.n / vals.length) * 100)}%` }),
+        h('small', {}, `${Math.round((r.n / vals.length) * 100)}%`))),
+      h('div', { class: 'msx-hwmeta' }, `Всего учеников: ${vals.length}`));
   }
 
   function placePop(el, anchor, id) {
