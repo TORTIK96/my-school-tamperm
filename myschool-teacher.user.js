@@ -1,10 +1,11 @@
 // ==UserScript==
-// @name         Моя школа — учитель: темы и ДЗ из КТП и Excel
+// @name         Моя школа — учитель: темы и ДЗ из КТП, не выкидывать из журнала
 // @namespace    tortik96.myschool.teacher
-// @version      0.3.3
-// @description  На странице «Уроки» журнала: проставить темы и домашние задания из КТП во все уроки разом или вставить их столбцами из Excel
-// @match        https://edu.gosuslugi.ru/journal-app/page.lessons/*
+// @version      0.4.0
+// @description  Журнал не закрывает сессию, пока вкладка открыта; на странице «Уроки» — темы и домашние задания из КТП во все уроки разом
+// @match        https://edu.gosuslugi.ru/*
 // @grant        none
+// @noframes
 // @run-at       document-idle
 // @require      https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js
 // @homepageURL  https://github.com/TORTIK96/my-school-tamperm
@@ -695,4 +696,40 @@
   }
   mount();
   new MutationObserver(() => mount()).observe(document.body, { childList: true, subtree: true });
+
+  // ---------- не дать журналу «выкинуть» при бездействии ----------
+  // Сервер закрывает сессию, если к нему долго нет запросов (своего таймера у страницы нет).
+  // Пока вкладка журнала открыта, раз в ~4 минуты отправляем лёгкий запрос текущей страницы
+  // без тела ответа (HEAD) — для сервера это как действие учителя. Несколько открытых вкладок
+  // договариваются через localStorage, чтобы запрос шёл один на всех.
+  const KA_EVERY = 4 * 60 * 1000;
+  const KA_KEY = 'msxt_keepalive_at';
+  let kaFails = 0, kaStopped = false;
+
+  function kaBanner() {
+    if (document.getElementById('msxt-expired')) return;
+    const b = h('div', { id: 'msxt-expired', style: 'position:fixed;left:50%;top:12px;transform:translateX(-50%);z-index:99999;background:#C4372A;color:#fff;font:700 14px/1.4 Arial,sans-serif;padding:10px 16px;border-radius:12px;box-shadow:0 6px 18px rgba(0,0,0,.3);max-width:92vw' },
+      'Сессия журнала закончилась — несохранённые изменения не запишутся. ',
+      h('a', { href: location.href, style: 'color:#fff;text-decoration:underline' }, 'Войти заново'));
+    document.body.append(b);
+  }
+
+  async function keepAlive() {
+    if (kaStopped) return;
+    let last = 0;
+    try { last = Number(localStorage.getItem(KA_KEY)) || 0; } catch (_) { /* без localStorage — просто чаще */ }
+    if (Date.now() - last < KA_EVERY) return; // другая вкладка уже продлила
+    try { localStorage.setItem(KA_KEY, String(Date.now())); } catch (_) { /* не критично */ }
+    try {
+      const r = await fetch(location.href, { method: 'HEAD', credentials: 'same-origin', cache: 'no-store', redirect: 'manual' });
+      // перенаправление на вход или «нет доступа» = сессии уже нет
+      const dead = r.type === 'opaqueredirect' || r.status === 401 || r.status === 403;
+      kaFails = dead ? kaFails + 1 : 0;
+      if (kaFails >= 2) { kaStopped = true; kaBanner(); }
+    } catch (_) {
+      // нет сети — попробуем в следующий раз
+    }
+  }
+  // проверяем раз в минуту: так работает и в фоновой вкладке (браузер замедляет таймеры до раза в минуту)
+  setInterval(keepAlive, 60 * 1000);
 })();
