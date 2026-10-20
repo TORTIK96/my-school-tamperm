@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Моя школа — оценки, расписание, задания
 // @namespace    tortik96.myschool
-// @version      0.10.0
+// @version      0.11.0
 // @description  Удобный дневник поверх Госуслуг «Моя школа»: оценки со средним и средневзвешенным баллом, статистика и прогноз за четверть, расписание, домашние задания
 // @match        https://www.gosuslugi.ru/*
 // @grant        none
@@ -210,6 +210,18 @@
     for (const c of kids.flat(Infinity)) if (c != null) e.append(c.nodeType ? c : String(c));
     return e;
   }
+  const SVGNS = 'http://www.w3.org/2000/svg';
+  function svgEl(tag, attrs, ...kids) {
+    const e = document.createElementNS(SVGNS, tag);
+    for (const [k, v] of Object.entries(attrs || {})) e.setAttribute(k, v);
+    for (const c of kids) if (c) e.append(c);
+    return e;
+  }
+  // анимации: только при открытии вкладки/смене периода, и не если в системе «уменьшить движение»
+  const reduced = () => !!(window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches);
+  let animPending = null, animTimer = null, lastInd = null;
+  const wantAnim = (kind) => { animPending = kind || 'all'; };
+
   // 5 вместо 5,00 и 4,5 вместо 4,50
   const fmt = (x) => (x == null ? '—' : String(Math.round(x * 100) / 100).replace('.', ','));
   const grade = (x) => (x == null ? 'none' : x >= 4.5 ? 'g5' : x >= 3.5 ? 'g4' : x >= 2.5 ? 'g3' : 'g2');
@@ -390,6 +402,81 @@
   @media (max-width:560px){.msx-kpi{padding:12px 14px;border-radius:20px}.msx-kpi b{font-size:28px}.msx-card{padding:14px;border-radius:20px}
     .msx-tabs button{font-size:12.5px;padding:12px 2px}
     .msx-tbl th:nth-child(4),.msx-tbl td:nth-child(4){font-size:12px}}
+    .msx-hero{display:grid;grid-template-columns:auto minmax(0,1fr);gap:24px;align-items:center;background:var(--card);border-radius:28px;padding:20px 24px;margin-bottom:14px;box-shadow:0 4px 0 var(--line),0 8px 22px rgba(27,36,72,.06)}
+  .msx-ring{position:relative;width:156px;height:156px}
+  .msx-ring svg{display:block;width:100%;height:100%;transform:rotate(-90deg)}
+  .msx-ring .trk{fill:none;stroke:var(--soft);stroke-width:14}
+  .msx-ring .val{fill:none;stroke:var(--c);stroke-width:14;stroke-linecap:round}
+  .msx-ringc{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center}
+  .msx-ringc b{font-size:42px;font-weight:900;line-height:1}
+  .msx-ringc small{font-size:12px;font-weight:800;color:var(--muted);margin-top:4px}
+  .msx-hnote{font-size:13px;color:var(--muted);font-weight:700;margin-bottom:10px}
+  .msx-hstats{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
+  .msx-hstat{background:var(--soft);border-radius:18px;padding:12px 14px;min-width:0}
+  .msx-hstat span{display:block;font-size:12px;font-weight:800;color:var(--muted)}
+  .msx-hstat b{display:block;font-size:30px;font-weight:900;line-height:1.15;font-variant-numeric:tabular-nums}
+  .msx-hstat small{display:block;font-size:12px;color:var(--muted);overflow-wrap:anywhere}
+  .msx-gchips{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin-bottom:14px}
+  .msx-gchip{display:flex;align-items:center;gap:10px;background:var(--soft);border-radius:18px;padding:8px 12px}
+  .msx-gchip .msx-m{cursor:default;min-width:40px;height:42px}.msx-gchip .msx-m:hover{transform:none}
+  .msx-gchip b{display:block;font-size:22px;font-weight:900;line-height:1.1;font-variant-numeric:tabular-nums}
+  .msx-gchip small{color:var(--muted);font-size:12px;font-weight:700}
+  .msx-srow{display:grid;grid-template-columns:44px minmax(0,1fr);gap:14px;align-items:start;padding:12px 0;border-top:1px solid var(--line)}
+  .msx-srow .msx-m{cursor:default;min-width:44px;height:46px}.msx-srow .msx-m:hover{transform:none}
+  .msx-axisrow{border-top:0;padding:0}
+  .msx-axis{position:relative;height:16px;margin:0 2px;font-size:11px;font-weight:800;color:var(--muted)}
+  .msx-axis span{position:absolute;transform:translateX(-50%)}
+  .msx-shead{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 10px}
+  .msx-scale{position:relative;height:12px;margin:24px 2px 8px;border-radius:999px;
+    background:linear-gradient(90deg,rgba(238,90,76,.30) 0 16.6667%,rgba(245,190,60,.36) 16.6667% 50%,rgba(155,208,76,.40) 50% 83.3333%,rgba(52,179,106,.38) 83.3333% 100%)}
+  .msx-mk{position:absolute;top:50%;width:20px;height:20px;margin:-10px 0 0 -10px;border-radius:50%;background:var(--c);box-shadow:0 0 0 3px var(--card),0 3px 8px rgba(0,0,0,.22)}
+  .msx-mk span{position:absolute;bottom:25px;left:50%;transform:translateX(-50%);font:900 12px 'Noto Sans',Arial,sans-serif;color:var(--ink);white-space:nowrap;background:var(--card);padding:1px 7px;border-radius:8px;box-shadow:0 1px 4px rgba(0,0,0,.12)}
+  .msx-tabs{position:relative}
+  .msx-tabs button{position:relative;z-index:1}
+  .msx-tabs button[aria-current="page"]{background:transparent;box-shadow:none}
+  .msx-ind{position:absolute;top:5px;bottom:5px;left:0;width:0;border-radius:999px;background:var(--orange);box-shadow:inset 0 -3px 0 rgba(0,0,0,.15)}
+  @media (max-width:860px){.msx-hstats{grid-template-columns:repeat(3,minmax(0,1fr))}}
+  @media (max-width:560px){
+    .msx-hero{grid-template-columns:1fr;justify-items:center;gap:14px;padding:16px 14px;border-radius:22px}
+    .msx-hside{width:100%}.msx-hnote{text-align:center}
+    .msx-ring{width:136px;height:136px}.msx-ringc b{font-size:36px}
+    .msx-hstat{padding:10px}.msx-hstat b{font-size:22px}.msx-hstat small{font-size:11px}
+    .msx-gchips{grid-template-columns:repeat(2,minmax(0,1fr))}
+    .msx-srow{grid-template-columns:38px minmax(0,1fr);gap:10px}.msx-srow .msx-m{min-width:38px;height:40px}}
+  @media (prefers-reduced-motion:no-preference){
+    @keyframes msxUp{from{opacity:0;transform:translateY(14px)}}
+    @keyframes msxPop{from{opacity:0;transform:scale(.4)}}
+    @keyframes msxGrow{from{transform:scaleX(0)}}
+    @keyframes msxPopIn{from{opacity:0;transform:translateY(8px) scale(.96)}}
+    #msx-root[data-anim="all"] .msx-body>*{animation:msxUp .5s cubic-bezier(.2,.8,.2,1) backwards}
+    #msx-root[data-anim="all"] .msx-body>:nth-child(2){animation-delay:.05s}
+    #msx-root[data-anim="all"] .msx-body>:nth-child(3){animation-delay:.1s}
+    #msx-root[data-anim="all"] .msx-body>:nth-child(4){animation-delay:.15s}
+    #msx-root[data-anim="all"] .msx-body>:nth-child(5){animation-delay:.2s}
+    #msx-root[data-anim="all"] .msx-body>:nth-child(6){animation-delay:.25s}
+    #msx-root[data-anim="all"] .msx-body>:nth-child(7){animation-delay:.3s}
+    #msx-root[data-anim="all"] .msx-body>:nth-child(n+8){animation-delay:.35s}
+    #msx-root[data-anim="all"] .msx-marks .msx-m,#msx-root[data-anim="all"] .msx-lmarks .msx-m,#msx-root[data-anim="all"] .msx-gchip .msx-m{animation:msxPop .4s cubic-bezier(.3,1.6,.5,1) .2s backwards}
+    #msx-root[data-anim="all"] .msx-marks .msx-m:nth-child(n+4){animation-delay:.26s}
+    #msx-root[data-anim="all"] .msx-marks .msx-m:nth-child(n+8){animation-delay:.32s}
+    #msx-root[data-anim="all"] .msx-marks .msx-m:nth-child(n+12){animation-delay:.38s}
+    #msx-root[data-anim="all"] .msx-dist span{transform-origin:left;animation:msxGrow .8s cubic-bezier(.2,.8,.2,1) .25s backwards}
+    #msx-root[data-anim="all"] .msx-dist span:nth-child(2){animation-delay:.4s}
+    #msx-root[data-anim="all"] .msx-dist span:nth-child(3){animation-delay:.55s}
+    #msx-root[data-anim="all"] .msx-dist span:nth-child(4){animation-delay:.7s}
+    #msx-root[data-anim="all"] .msx-mk span{animation:msxUp .4s ease 1s backwards}
+    .msx-pop{animation:msxPopIn .2s cubic-bezier(.2,.8,.2,1)}
+    .msx-ind{transition:left .4s cubic-bezier(.3,.9,.3,1),width .4s cubic-bezier(.3,.9,.3,1)}
+    .msx-tabs button{transition:color .3s ease}
+    .msx-ring .val{transition:stroke-dashoffset 1.2s cubic-bezier(.2,.8,.2,1) .1s}
+    .msx-mk{transition:left 1s cubic-bezier(.2,.8,.2,1)}
+    #msx-root,.msx-card,.msx-hero,.msx-hstat,.msx-gchip,.msx-row,.msx-day,.msx-tabs,.msx-pop,.msx-top select,.msx-top button{transition:background-color .35s ease,color .35s ease}
+    .msx-card,.msx-hero,.msx-row,.msx-day{transition:background-color .35s ease,color .35s ease,transform .2s ease,box-shadow .2s ease}
+    .msx-row:hover{transform:translateY(-1px)}
+    .msx-top button,.msx-wbtn,.msx-more{transition:transform .12s ease,background-color .35s ease,color .35s ease}
+    .msx-top button:active,.msx-wbtn:active,.msx-more:active{transform:scale(.95)}
+    .msx-chk{transition:background-color .2s ease,border-color .2s ease,transform .15s ease}.msx-chk:active{transform:scale(.85)}
+    .msx-hw{transition:opacity .25s ease}}
     @media (max-width:560px){
     .msx-tabs{position:fixed;left:10px;right:10px;bottom:calc(10px + env(safe-area-inset-bottom,0px));z-index:3;display:flex;margin:0;box-shadow:0 6px 22px rgba(27,36,72,.28)}
     .msx-tabs button{flex:1;padding:12px 4px}
@@ -462,8 +549,9 @@
 
   const noHw = (x) => !x || !String(x.description || '').trim() || /^без задани/i.test(String(x.description).trim());
 
-  function renderShell(body, controls) {
+  function renderShell(body, controls, isMessage) {
     closePop();
+    if (body && body.classList) body.classList.add('msx-body');
     const title = TABS.find(([k]) => k === tab)[1];
     const top = h('div', { class: 'msx-top' },
       h('div', { class: 'msx-title' }, h('div', { class: 'msx-school' }, (ctx && ctx.school) || 'Моя школа'), h('h2', {}, title)));
@@ -490,15 +578,35 @@
           onclick: MsxAndroid.showSessionLog ? () => MsxAndroid.showSessionLog() : null,
         }, (MsxAndroid.sessionInfo() || (MsxAndroid.showSessionLog ? 'сессия' : '')) + (MsxAndroid.showSessionLog ? ' · журнал ›' : '')) : null)
       : null;
+    if (!isMessage) {
+      clearTimeout(animTimer);
+      if (animPending && !reduced()) {
+        root.setAttribute('data-anim', animPending);
+        animTimer = setTimeout(() => root.removeAttribute('data-anim'), 1600);
+      } else root.removeAttribute('data-anim');
+      animPending = null;
+    }
     root.replaceChildren(h('div', { class: 'msx-wrap' }, top, nav, body, appInfo));
+    // подложка активной вкладки переезжает с прошлой кнопки на новую
+    const act = nav.querySelector('[aria-current]');
+    if (act) {
+      const ind = h('span', { class: 'msx-ind', 'aria-hidden': 'true' });
+      nav.prepend(ind);
+      const to = { x: act.offsetLeft, w: act.offsetWidth };
+      const place = (p) => { ind.style.left = p.x + 'px'; ind.style.width = p.w + 'px'; };
+      if (lastInd && (lastInd.x !== to.x || lastInd.w !== to.w) && !reduced()) {
+        ind.style.transition = 'none'; place(lastInd); ind.getBoundingClientRect(); ind.style.transition = '';
+      }
+      place(to); lastInd = to;
+    }
   }
 
   function renderMessage(text, isError) {
-    renderShell(h('p', { class: isError ? 'msx-err' : 'msx-info' }, text));
+    renderShell(h('p', { class: isError ? 'msx-err' : 'msx-info' }, text), null, true);
   }
 
   function showTab(k) {
-    tab = k; save('msx_tab', k);
+    tab = k; save('msx_tab', k); wantAnim();
     if (k === 'marks') return data ? renderTable() : reload();
     if (k === 'stats') return data ? renderStats() : reload();
     if (k === 'schedule') return loadWeek();
@@ -709,6 +817,7 @@
   }
 
   async function reload() {
+    wantAnim();
     try {
       renderMessage('Загружаю оценки…');
       data = await fetchMarks(student.student_id, period);
@@ -896,7 +1005,7 @@
       body.append(h('p', {}, 'За этот период оценок нет. Выберите другой период выше.'));
       return renderShell(body, marksControls());
     }
-    // --- плитки ---
+    // --- главное: средний балл кольцом и цифры рядом ---
     const S = rows.reduce((a, r) => a + r.wsum, 0), T = rows.reduce((a, r) => a + r.wtot, 0);
     const pooled = T ? S / T : null;
     const ofSubj = rows.reduce((a, r) => a + r.wavg, 0) / rows.length;
@@ -907,30 +1016,51 @@
     const absAll = [...abs.values()].flat();
     const absBy = { 'Б': 0, 'П': 0, 'Н': 0, 'О': 0 };
     for (const l of absAll) absBy[absInfo(l).letter]++;
-    const kpi = (label, value, sub, cls) => h('div', { class: 'msx-kpi' }, h('span', {}, label), h('b', { class: cls || '' }, value), sub ? h('small', {}, sub) : null);
-    body.append(h('div', { class: 'msx-kpis' },
-      kpi('Средний балл', fmt(round1(pooled)), 'по всем оценкам, с весами'),
-      kpi('По предметам', fmt(round1(ofSubj)), siteStat && siteStat.total ? `на сайте: ${fmt(siteStat.total)}` : 'среднее средних — так считает сайт'),
-      kpi('Оценок', String(nMarks), `${rows.length} ${plural(rows.length, ['предмет', 'предмета', 'предметов'], false)}`),
-      kpi('Пропусков', String(absAll.length), absAll.length ? Object.entries(absBy).filter(([, n]) => n)
-        .map(([k, n]) => `${{ 'Б': 'по болезни', 'П': 'уважит.', 'Н': 'неуважит.', 'О': 'опоздания' }[k]} ${n}`).join(' · ') : 'нет')));
+    const pct = (v) => Math.max(0, Math.min(100, ((v - 2) / 3) * 100)); // шкала 2…5 в процентах
+    const RC = 2 * Math.PI * 52;
+    const ringSvg = svgEl('svg', { viewBox: '0 0 120 120', 'aria-hidden': 'true' },
+      svgEl('circle', { cx: 60, cy: 60, r: 52, class: 'trk' }),
+      svgEl('circle', { cx: 60, cy: 60, r: 52, class: 'val', 'stroke-dasharray': RC.toFixed(2),
+        'data-c': RC.toFixed(2), 'data-off': (RC * (1 - pct(pooled) / 100)).toFixed(2), style: `stroke-dashoffset:${(RC * (1 - pct(pooled) / 100)).toFixed(2)}` }));
+    const hstat = (label, value, sub, dec) => h('div', { class: 'msx-hstat' }, h('span', {}, label),
+      h('b', { 'data-count': value, 'data-dec': dec ? '1' : '0' }, dec ? fmt(round1(value)) : String(value)), sub ? h('small', {}, sub) : null);
+    body.append(h('section', { class: 'msx-hero' },
+      h('div', { class: `msx-ring ${grade(pooled)}`, role: 'img', 'aria-label': `Средний балл ${fmt(round1(pooled))} из 5` }, ringSvg,
+        h('div', { class: 'msx-ringc' }, h('b', { 'data-count': pooled, 'data-dec': '1' }, fmt(round1(pooled))), h('small', {}, 'средний балл'))),
+      h('div', { class: 'msx-hside' },
+        h('div', { class: 'msx-hnote' }, `${period.name}: по всем оценкам с учётом весов`),
+        h('div', { class: 'msx-hstats' },
+          hstat('По предметам', ofSubj, siteStat && siteStat.total ? `на сайте ${fmt(siteStat.total)}` : 'среднее средних', true),
+          hstat('Оценок', nMarks, `${rows.length} ${plural(rows.length, ['предмет', 'предмета', 'предметов'], false)}`),
+          hstat('Пропусков', absAll.length, absAll.length ? Object.entries(absBy).filter(([, n]) => n)
+            .map(([k, n]) => `${{ 'Б': 'болезнь', 'П': 'уважит.', 'Н': 'неуважит.', 'О': 'опозд.' }[k]} ${n}`).join(' · ') : 'нет')))));
 
-    // --- распределение оценок ---
+    // --- какие оценки ---
     body.append(h('section', { class: 'msx-card' }, h('h3', {}, 'Какие оценки'),
-      h('div', { class: 'msx-dist', role: 'img', 'aria-label': [5, 4, 3, 2].map((k) => `${k}: ${dist[k]}`).join(', ') },
-        [5, 4, 3, 2].filter((k) => dist[k]).map((k) => h('span', { class: `g${k}`, style: `flex:${dist[k]}`, title: `«${k}»: ${dist[k]}` }))),
-      h('div', { class: 'msx-distl' }, [5, 4, 3, 2].map((k) => h('span', {}, h('i', { class: `g${k}` }), `«${k}» — ${dist[k]} (${nMarks ? Math.round((dist[k] / nMarks) * 100) : 0}%)`)))));
+      h('div', { class: 'msx-gchips' }, [5, 4, 3, 2].map((k) => h('div', { class: 'msx-gchip' },
+        h('span', { class: `msx-m g${k}` }, h('b', {}, String(k))),
+        h('div', {}, h('b', { 'data-count': dist[k], 'data-dec': '0' }, String(dist[k])),
+          h('small', {}, `${nMarks ? Math.round((dist[k] / nMarks) * 100) : 0}%`))))),
+      h('div', { class: 'msx-dist', role: 'img', 'aria-label': [5, 4, 3, 2].map((k) => `«${k}»: ${dist[k]}`).join(', ') },
+        [5, 4, 3, 2].filter((k) => dist[k]).map((k) => h('span', { class: `g${k}`, style: `flex:${dist[k]}`, title: `«${k}»: ${dist[k]}` })))));
 
-    // --- прогноз ---
+    // --- предметы: шкала 2…5 и прогноз ---
     const fc = rows.map((r) => ({ r, f: forecast(r) })).filter((x) => x.f)
       .sort((a, b) => a.f.grade - b.f.grade || (b.f.edge - a.f.edge) || a.r.wavg - b.r.wavg);
-    body.append(h('section', { class: 'msx-card' }, h('h3', {}, `Что выходит за ${period.name.replace(/^\d+ /, '').toLowerCase() === 'весь год' ? 'год' : period.name}`),
-      h('p', { class: 'msx-info' }, 'Сначала предметы, где оценка ниже или на грани. Считаем по обычному правилу: от 4,5 — «5», от 3,5 — «4», от 2,5 — «3»; новые оценки — с весом 1. В положении школы правило может быть другим — спорную оценку решает учитель.'),
-      fc.map(({ r, f }) => h('div', { class: 'msx-fc' },
-        h('span', { class: `msx-m ${grade(f.grade)}` }, h('b', {}, String(f.grade))),
-        h('div', {}, h('div', { class: 'msx-lsub' }, r.subject, f.edge ? h('span', { class: 'msx-pill' }, 'на грани') : null),
-          h('div', { class: 'msx-hwmeta' }, `сейчас ${fmt(r.wavg)} · ${plural(r.n, ['оценка', 'оценки', 'оценок'])}`),
-          f.lines.map((t) => h('div', { class: 'msx-fcl' }, t)))))));
+    body.append(h('section', { class: 'msx-card' },
+      h('h3', {}, `Что выходит за ${period.type === 'year' ? 'год' : period.name}`),
+      h('p', { class: 'msx-info' }, 'Бегунок — средний балл (с весами), цвет полосы — какая оценка выходит. Сначала предметы ниже «5» или на грани. Правило обычное: от 4,5 — «5», от 3,5 — «4», от 2,5 — «3»; в положении школы может быть иначе.'),
+      h('div', { class: 'msx-srow msx-axisrow', 'aria-hidden': 'true' }, h('span', {}),
+        h('div', { class: 'msx-axis' }, [2, 3, 4, 5].map((g) => h('span', { style: `left:${pct(g)}%` }, String(g))))),
+      fc.map(({ r, f }) => h('div', { class: 'msx-srow' },
+        h('span', { class: `msx-m ${grade(f.grade)}`, title: 'выходит за период' }, h('b', {}, String(f.grade))),
+        h('div', { class: 'msx-sbody' },
+          h('div', { class: 'msx-shead' }, h('span', { class: 'msx-lsub' }, r.subject),
+            f.edge ? h('span', { class: 'msx-pill' }, 'на грани') : null,
+            h('span', { class: 'msx-hwmeta' }, plural(r.n, ['оценка', 'оценки', 'оценок']))),
+          h('div', { class: 'msx-scale', role: 'img', 'aria-label': `${r.subject}: средний ${fmt(r.wavg)}, выходит ${f.grade}` },
+            h('i', { class: `msx-mk ${grade(r.wavg)}`, style: `left:${pct(r.wavg)}%`, 'data-left': pct(r.wavg).toFixed(2) }, h('span', {}, fmt(r.wavg)))),
+          h('div', { class: 'msx-fcl' }, f.lines.join(' · ')))))));
 
     // --- график по неделям ---
     const subjects = rows.map((r) => r.subject);
@@ -940,7 +1070,7 @@
     if (statSubj) series.push({ name: statSubj, pts: weeklySeries(data.marks.filter((m) => subjOf(m) === statSubj)), cls: 'main' });
     const chartCard = h('section', { class: 'msx-card' },
       h('div', { class: 'msx-cardh' }, h('h3', {}, 'Как менялся средний балл'),
-        h('select', { class: 'msx-inp msx-sel', 'aria-label': 'Предмет на графике', onchange: (e) => { statSubj = e.target.value; save('msx_stat_subj', statSubj); renderStats(); } },
+        h('select', { class: 'msx-inp msx-sel', 'aria-label': 'Предмет на графике', onchange: (e) => { statSubj = e.target.value; save('msx_stat_subj', statSubj); wantAnim('chart'); renderStats(); } },
           h('option', { value: '', selected: !statSubj ? '' : null }, 'Все предметы'),
           subjects.map((s) => h('option', { value: s, selected: s === statSubj ? '' : null }, s)))),
       h('div', { class: 'msx-legend2' }, series.map((s) => h('span', {}, h('i', { class: `sw ${s.cls}` }), s.name))),
@@ -965,6 +1095,49 @@
             h('td', {}, r.subject), h('td', {}, fmt(round1(r.wavg))), h('td', {}, fmt(s.total)), h('td', {}, why || 'совпадает')))))));
     }
     renderShell(body, marksControls());
+    playStatAnims();
+  }
+
+  // Кольцо заполняется, бегунки едут к баллу, цифры «набегают», линия графика прорисовывается.
+  // Только при открытии вкладки/смене периода (data-anim) и если система не просит «меньше движения».
+  function playStatAnims() {
+    const mode = root.getAttribute('data-anim');
+    if (!mode || reduced()) return;
+    const all = mode === 'all';
+    if (all) {
+      root.querySelectorAll('.msx-ring .val').forEach((c) => {
+        c.style.transition = 'none'; c.style.strokeDashoffset = c.dataset.c; c.getBoundingClientRect();
+        c.style.transition = ''; c.style.strokeDashoffset = c.dataset.off;
+      });
+      root.querySelectorAll('.msx-mk').forEach((m, i) => {
+        m.style.transition = 'none'; m.style.left = '0%'; m.getBoundingClientRect();
+        m.style.transition = ''; m.style.transitionDelay = `${150 + Math.min(i, 12) * 45}ms`; m.style.left = m.dataset.left + '%';
+      });
+      root.querySelectorAll('[data-count]').forEach(countUp);
+    }
+    root.querySelectorAll('.msx-svg .ln').forEach((p) => {
+      const len = p.getTotalLength();
+      p.style.transition = 'none'; p.style.strokeDasharray = `${len} ${len}`; p.style.strokeDashoffset = String(len); p.getBoundingClientRect();
+      p.style.transition = 'stroke-dashoffset 1.1s cubic-bezier(.3,.7,.2,1)'; p.style.strokeDashoffset = '0';
+    });
+    root.querySelectorAll('.msx-svg .dot, .msx-svg .lbl').forEach((d, i, list) => {
+      d.style.transition = 'none'; d.style.opacity = '0'; d.getBoundingClientRect();
+      d.style.transition = `opacity .3s ease ${300 + (i / list.length) * 800}ms`; d.style.opacity = '1';
+    });
+  }
+
+  function countUp(el) {
+    const to = parseFloat(el.dataset.count);
+    if (!(to > 0)) return;
+    const dec = el.dataset.dec === '1', from = dec ? Math.max(0, to - 1.5) : 0, t0 = performance.now(), dur = 900;
+    const show = (v) => { el.textContent = dec ? fmt(round1(v)) : String(Math.round(v)); };
+    show(from);
+    const step = (t) => {
+      const k = Math.min(1, (t - t0) / dur), e = 1 - Math.pow(1 - k, 3);
+      show(from + (to - from) * e);
+      if (k < 1 && el.isConnected) requestAnimationFrame(step);
+    };
+    requestAnimationFrame(step);
   }
 
   // ---------- вкладка «Расписание» ----------
@@ -974,7 +1147,7 @@
 
   function weekControls() {
     const sun = new Date(weekStart.getTime() + 6 * DAY);
-    const go = (days) => { weekStart = new Date(weekStart.getTime() + days * DAY); loadWeek(); };
+    const go = (days) => { weekStart = new Date(weekStart.getTime() + days * DAY); wantAnim(); loadWeek(); };
     return [h('div', { class: 'msx-weeknav' },
       h('button', { 'aria-label': 'Предыдущая неделя', onclick: () => go(-7) }, '‹'),
       h('span', {}, `${shortDate(weekStart)} – ${shortDate(sun)}`),
@@ -1102,7 +1275,9 @@
       document.body.append(root);
       if (window.MsxAndroid && MsxAndroid.setTheme) MsxAndroid.setTheme(theme);
     }
+    const wasHidden = root.style.display === 'none' || !root.isConnected || !root.firstChild;
     root.style.display = '';
+    if (wasHidden && !reduced() && root.animate) root.animate([{ opacity: 0, transform: 'scale(.985)' }, { opacity: 1, transform: 'none' }], { duration: 260, easing: 'cubic-bezier(.2,.8,.2,1)' });
     try {
       if (!ctx) { renderMessage('Подключаюсь к «Моя школа»…'); ctx = await loadContext(); student = ctx.students[0]; }
       if (!periods) { const r = await loadPeriods(student, ctx.year); periods = r; ctx.school = r.school; period = defaultPeriod(periods); }
