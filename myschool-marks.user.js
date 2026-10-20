@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Моя школа — оценки, расписание, задания
 // @namespace    tortik96.myschool
-// @version      0.11.2
+// @version      0.12.0
 // @description  Удобный дневник поверх Госуслуг «Моя школа»: оценки со средним и средневзвешенным баллом, статистика и прогноз за четверть, расписание, домашние задания
 // @match        https://www.gosuslugi.ru/*
 // @grant        none
@@ -494,6 +494,24 @@
   .msx-clsr small{color:var(--muted);font-weight:700;min-width:34px;text-align:right}
   .msx-clsr.me{background:var(--card);font-weight:800}.msx-clsr.me i{background:linear-gradient(90deg,var(--orange) var(--w),var(--line) var(--w));opacity:1}
   .msx-pop{max-height:calc(100vh - 16px);overflow:auto}
+    .msx-finwrap{overflow-x:auto}
+  .msx-fin{width:100%;border-collapse:collapse}
+  .msx-fin th{font-size:12px;font-weight:800;color:var(--muted);padding:4px 6px 10px;text-align:center;white-space:nowrap}
+  .msx-fin th:first-child,.msx-fin td.sj{text-align:left}
+  .msx-fin th small{display:block;font-size:10px;font-weight:700}
+  .msx-fin th.cur{color:var(--orange)}
+  .msx-fin td{padding:6px;border-top:1px solid var(--line);text-align:center;vertical-align:middle}
+  .msx-fin td.sj{font-weight:800;font-size:14px;padding-left:0;min-width:110px}
+  .msx-fin .msx-m{cursor:default;min-width:40px;height:40px}.msx-fin .msx-m:hover{transform:none}
+  .msx-plan{background:transparent!important;color:var(--ink)!important;box-shadow:none!important;border:2px dashed var(--c)!important}
+  .msx-plan.g4{border-color:#7FB534!important}.msx-plan.g3{border-color:#E0A21E!important}
+  .msx-legend .msx-lg{min-width:26px;height:26px;border-radius:9px;cursor:default}.msx-legend .msx-lg b{font-size:13px}
+  .msx-dash{color:var(--muted)}
+  .msx-finb{display:inline-flex;align-items:center;gap:4px;font-size:11px;font-weight:800;color:var(--muted)}
+  .msx-finb b{display:inline-grid;place-items:center;min-width:22px;height:22px;border-radius:7px;background:var(--c);color:var(--on);font-size:12px}
+  .msx-pill-ok{background:var(--g5);color:#fff}
+  #msx-root[data-anim="all"] .msx-fin tbody tr{animation:msxUp .45s cubic-bezier(.2,.8,.2,1) backwards}
+  @media (max-width:560px){.msx-tabs button{font-size:11px;padding:12px 1px}.msx-fin td.sj{font-size:13px;min-width:90px}.msx-fin .msx-m{min-width:34px;height:34px}.msx-fin td{padding:5px 3px}}
     @media (max-width:560px){
     .msx-tabs{position:fixed;left:10px;right:10px;bottom:calc(10px + env(safe-area-inset-bottom,0px));z-index:3;display:flex;margin:0;box-shadow:0 6px 22px rgba(27,36,72,.28)}
     .msx-tabs button{flex:1;padding:12px 4px}
@@ -506,8 +524,9 @@
 
   let root, ctx, student, periods, period, data, pop = null;
   let siteStat = null; // средние баллы со страницы статистики Госуслуг (для сравнения)
+  let finals = null;   // итоговые оценки, которые выставили учителя (за периоды и год)
   const APP = !!window.MSX_APP; // внутри Android-приложения
-  const TABS = [['marks', 'Оценки'], ['stats', 'Статистика'], ['schedule', 'Расписание'], ['hw', 'Задания']];
+  const TABS = [['marks', 'Оценки'], ['final', 'Итоги'], ['stats', 'Статистика'], ['schedule', 'Расписание'], ['hw', 'Задания']];
   let tab = load('msx_tab', 'marks');
   if (!TABS.some(([k]) => k === tab)) tab = 'marks';
   let weekStart = monday(new Date());
@@ -574,7 +593,7 @@
       h('div', { class: 'msx-title' }, h('div', { class: 'msx-school' }, (ctx && ctx.school) || 'Моя школа'), h('h2', {}, title)));
     if (ctx && ctx.students.length > 1) {
       top.append(h('select', { 'aria-label': 'Ученик', onchange: async (e) => {
-        student = ctx.students[e.target.value]; periods = null; data = null; await openPanel(); } },
+        student = ctx.students[e.target.value]; periods = null; data = null; finals = null; await openPanel(); } },
       ctx.students.map((s, i) => h('option', { value: i, selected: s === student ? '' : null }, s.student_first_name || `Ученик ${i + 1}`))));
     }
     top.append(...(controls || []),
@@ -603,6 +622,13 @@
       } else root.removeAttribute('data-anim');
       animPending = null;
     }
+    // где подложка вкладки сейчас на экране (она может быть посреди движения)
+    let indNow = null;
+    const oldInd = root.querySelector('.msx-ind');
+    if (oldInd && oldInd.parentElement) {
+      const r = oldInd.getBoundingClientRect(), pr = oldInd.parentElement.getBoundingClientRect();
+      if (r.width) indNow = { x: r.left - pr.left - oldInd.parentElement.clientLeft, w: r.width };
+    }
     root.replaceChildren(h('div', { class: 'msx-wrap' }, top, nav, body, appInfo));
     // подложка активной вкладки переезжает с прошлой кнопки на новую
     const act = nav.querySelector('[aria-current]');
@@ -611,9 +637,12 @@
       nav.prepend(ind);
       const to = { x: act.offsetLeft, w: act.offsetWidth };
       const place = (p) => { ind.style.left = p.x + 'px'; ind.style.width = p.w + 'px'; };
-      if (lastInd && (lastInd.x !== to.x || lastInd.w !== to.w) && !reduced()) {
-        ind.style.transition = 'none'; place(lastInd); ind.getBoundingClientRect(); ind.style.transition = '';
-      }
+      // новая подложка появляется сразу на прошлом месте (без анимации) и уже оттуда едет к новой вкладке;
+      // иначе при повторной отрисовке (сначала «Загружаю…», потом содержимое) она летела от левого края
+      ind.style.transition = 'none';
+      place(!reduced() && (indNow || lastInd) ? (indNow || lastInd) : to);
+      ind.getBoundingClientRect();
+      ind.style.transition = '';
       place(to); lastInd = to;
     }
   }
@@ -626,11 +655,12 @@
     tab = k; save('msx_tab', k); wantAnim();
     if (k === 'marks') return data ? renderTable() : reload();
     if (k === 'stats') return data ? renderStats() : reload();
+    if (k === 'final') return loadFinal();
     if (k === 'schedule') return loadWeek();
     return loadHw();
   }
 
-  function refresh() { cache.clear(); data = null; showTab(tab); }
+  function refresh() { cache.clear(); data = null; finals = null; showTab(tab); }
 
   function weightInputs(obj, onSet) {
     return TYPES.map((t) => h('label', {}, t.name, h('input', {
@@ -838,7 +868,7 @@
           r.kavg != null ? h('span', { class: 'msx-kr' }, 'по КР ' + fmt(r.kavg)) : null),
         h('div', { class: 'msx-avg wt', 'aria-label': 'Средневзвешенный балл ' + fmt(r.wavg),
           title: weighted ? 'С учётом весов' : 'Веса не заданы — совпадает со средним' }, h('b', { class: grade(r.wavg) }, fmt(r.wavg)),
-          siteBadge(r)));
+          siteBadge(r), finalBadge(r)));
       if (open) {
         row.append(h('div', { class: 'msx-wpanel' },
           weightInputs(w, (code, v) => { W.bySubject[r.subject] = Object.assign({}, w, { [code]: v }); saveW(); renderTable(); }),
@@ -865,9 +895,113 @@
       // балл, который показывает сам сайт, — для сравнения; если не получилось, просто без него
       siteStat = null;
       try { siteStat = await fetchSiteStat(student.student_id, period); } catch (_) { siteStat = null; }
+      await ensureFinals();
       if (tab === 'marks') renderTable();
       else if (tab === 'stats') renderStats();
     } catch (e) { renderMessage(e.message || String(e), true); }
+  }
+
+
+  // ---------- итоговые оценки (выставляют учителя) ----------
+  // Как на сайте: student_pmarks — за четверти/полугодия, student_ymarks — годовые и итоговые.
+  // fact — что выставил учитель; recent_plan — прогноз сайта, пока оценки нет.
+  const pick = (o, ...ks) => { for (const k of ks) { const v = o && o[k]; if (v != null && v !== '' && v !== 'null') return String(v); } return null; };
+  async function fetchFinals(sid, year) {
+    const res = await api('/v1/datamart', [
+      { interval_id: year, obj_type: 'student_pmarks', student_id: sid },
+      { interval_id: year, obj_type: 'student_ymarks', student_id: sid }]);
+    const byPeriod = new Map(), yearMarks = new Map();
+    for (const b of res || []) {
+      for (const d of b.data || []) {
+        if (b.obj_type === 'student_pmarks') {
+          for (const x of Array.isArray(d.periods) ? d.periods : [d]) {
+            const pid = pick(x, 'period_id', 'periodId'), subj = pick(x, 'subject_name', 'subjectName');
+            if (!pid || !subj) continue;
+            if (!byPeriod.has(pid)) byPeriod.set(pid, new Map());
+            byPeriod.get(pid).set(subj, { fact: pick(x, 'fact'), plan: pick(x, 'recent_plan', 'recentPlan') });
+          }
+        } else if (b.obj_type === 'student_ymarks') {
+          const subj = pick(d, 'subject_name', 'subjectName');
+          if (subj) yearMarks.set(subj, { fact: pick(d, 'fact'), final: pick(d, 'final_fact', 'finalFact'), plan: pick(d, 'recent_plan', 'recentPlan') });
+        }
+      }
+    }
+    return { byPeriod, year: yearMarks };
+  }
+  async function ensureFinals() {
+    if (finals) return finals;
+    try { finals = await fetchFinals(student.student_id, ctx.year); } catch (_) { finals = { byPeriod: new Map(), year: new Map(), failed: true }; }
+    return finals;
+  }
+  // оценка учителя за выбранный период (или за год), если уже выставлена
+  function teacherFinal(subject) {
+    if (!finals || !period) return null;
+    if (period.type === 'year') return (finals.year.get(subject) || {}).fact || null;
+    return ((finals.byPeriod.get(period.id) || new Map()).get(subject) || {}).fact || null;
+  }
+  const markCls = (v) => { const n = parseInt(v, 10); return n >= 1 && n <= 5 ? grade(n) : 'none'; };
+
+  async function loadFinal() {
+    renderMessage('Загружаю итоговые оценки…');
+    try {
+      await ensureFinals();
+      // для нашего прогноза нужны оценки текущего периода — подгружаем, если ещё не открывали «Оценки»
+      if (!data && period) { try { data = await fetchMarks(student.student_id, period); } catch (_) { /* без прогноза */ } }
+      if (tab === 'final') renderFinal();
+    } catch (e) { renderMessage(e.message || String(e), true); }
+  }
+
+  function renderFinal() {
+    rerender = null;
+    // столбцы — периоды аттестации (как на сайте: не «учебные» периоды); если таких нет — четверти
+    let cols = periods.filter((p) => !p.quarter && p.type !== 'year' && p.id);
+    if (!cols.length) cols = periods.filter((p) => p.quarter && p.id);
+    cols = cols.slice().sort((a, b) => a.from.localeCompare(b.from));
+    const roman = ['I', 'II', 'III', 'IV', 'V', 'VI'];
+    const today = isoD(new Date());
+    // наш прогноз — для периода, оценки которого сейчас загружены
+    const ours = new Map();
+    if (data && period && cols.some((c) => c.id === period.id)) for (const r of summarize(data.marks)) { const f = forecast(r); if (f) ours.set(r.subject, f.grade); }
+    const subjects = new Set([...finals.year.keys()]);
+    for (const m of finals.byPeriod.values()) for (const k of m.keys()) subjects.add(k);
+    for (const k of ours.keys()) subjects.add(k);
+    const list = [...subjects].sort((a, b) => a.localeCompare(b, 'ru'));
+    const anyFact = [...finals.byPeriod.values()].some((m) => [...m.values()].some((x) => x.fact)) || [...finals.year.values()].some((x) => x.fact);
+    const anyFinal = [...finals.year.values()].some((x) => x.final);
+    const cell = (fact, plan, ourG, title) => {
+      if (fact) return h('span', { class: `msx-m ${markCls(fact)}`, title: `${title}: выставлено учителем` }, h('b', {}, fact));
+      if (plan) return h('span', { class: `msx-m msx-plan ${markCls(plan)}`, title: `${title}: прогноз сайта` }, h('b', {}, plan));
+      if (ourG) return h('span', { class: `msx-m msx-plan ${grade(ourG)}`, title: `${title}: наш прогноз по текущим оценкам` }, h('b', {}, String(ourG)));
+      return h('span', { class: 'msx-dash' }, '—');
+    };
+    const body = h('div', {});
+    body.append(h('p', { class: 'msx-info' }, anyFact
+      ? 'Сплошная плитка — оценка, которую выставил учитель. Пунктир — прогноз, пока оценки нет.'
+      : 'Итоговые оценки ещё не выставлены — появятся здесь, когда учителя их поставят. Пока пунктиром показан прогноз.'));
+    if (finals.failed) body.append(h('p', { class: 'msx-err' }, 'Не удалось получить итоговые оценки с сайта — показан только наш прогноз.'));
+    if (!list.length) body.append(h('p', {}, 'Пока нет ни оценок, ни прогноза. Загляните во вкладку «Оценки».'));
+    else {
+      const head = [h('th', {}, 'Предмет'), ...cols.map((c) => h('th', { class: c.from <= today && today <= c.to ? 'cur' : '' }, `${roman[Number(c.name.split(' ')[0]) - 1] || c.name.split(' ')[0]}`,
+        h('small', {}, c.type === 'halfyear' ? 'полуг.' : c.type === 'quarter' ? 'четв.' : ''))), h('th', {}, 'Год')];
+      if (anyFinal) head.push(h('th', {}, 'Итог'));
+      body.append(h('section', { class: 'msx-card msx-finwrap' }, h('table', { class: 'msx-fin' },
+        h('thead', {}, h('tr', {}, head)),
+        h('tbody', {}, list.map((subj) => {
+          const y = finals.year.get(subj) || {};
+          return h('tr', {},
+            h('td', { class: 'sj' }, subj),
+            cols.map((c) => {
+              const x = (finals.byPeriod.get(c.id) || new Map()).get(subj) || {};
+              return h('td', {}, cell(x.fact, x.plan, c.id === (period && period.id) ? ours.get(subj) : null, `${c.name}`));
+            }),
+            h('td', {}, cell(y.fact, y.plan, null, 'Год')),
+            anyFinal ? h('td', {}, cell(y.final, null, null, 'Итог')) : null);
+        })))));
+      body.append(h('div', { class: 'msx-legend' },
+        h('span', {}, h('span', { class: 'msx-m g5 msx-lg' }, h('b', {}, '5')), 'выставил учитель'),
+        h('span', {}, h('span', { class: 'msx-m msx-plan g5 msx-lg' }, h('b', {}, '5')), 'прогноз')));
+    }
+    renderShell(body);
   }
 
   // ---------- статистика сайта (для сравнения) ----------
@@ -914,6 +1048,12 @@
       if (o != null && Math.abs(round1(o) - s.total) < 0.05) return `сайт ещё не учёл ${plural(fresh.length, ['новую оценку', 'новые оценки', 'новых оценок'], true)}` + (weighted ? ' и не учитывает веса' : '');
     }
     return 'не сходится с оценками — возможно, оценку исправили в журнале';
+  }
+
+  function finalBadge(r) {
+    const f = teacherFinal(r.subject);
+    if (!f) return null;
+    return h('span', { class: 'msx-finb', title: `Учитель выставил за ${period.type === 'year' ? 'год' : period.name}: ${f}` }, 'итог ', h('b', { class: markCls(f) }, f));
   }
 
   function siteBadge(r) {
@@ -1096,7 +1236,7 @@
         h('span', { class: `msx-m ${grade(f.grade)}`, title: 'выходит за период' }, h('b', {}, String(f.grade))),
         h('div', { class: 'msx-sbody' },
           h('div', { class: 'msx-shead' }, h('span', { class: 'msx-lsub' }, r.subject),
-            f.edge ? h('span', { class: 'msx-pill' }, 'на грани') : null,
+            teacherFinal(r.subject) ? h('span', { class: 'msx-pill msx-pill-ok' }, `выставлено: ${teacherFinal(r.subject)}`) : f.edge ? h('span', { class: 'msx-pill' }, 'на грани') : null,
             h('span', { class: 'msx-hwmeta' }, plural(r.n, ['оценка', 'оценки', 'оценок']))),
           h('div', { class: 'msx-scale', role: 'img', 'aria-label': `${r.subject}: средний ${fmt(r.wavg)}, выходит ${f.grade}` },
             h('i', { class: `msx-mk ${grade(r.wavg)}`, style: `left:${pct(r.wavg)}%`, 'data-left': pct(r.wavg).toFixed(2) }, h('span', {}, fmt(r.wavg)))),
