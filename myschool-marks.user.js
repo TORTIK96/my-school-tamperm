@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Моя школа — оценки, расписание, задания
 // @namespace    tortik96.myschool
-// @version      0.12.0
+// @version      0.13.0
 // @description  Удобный дневник поверх Госуслуг «Моя школа»: оценки со средним и средневзвешенным баллом, статистика и прогноз за четверть, расписание, домашние задания
 // @match        https://www.gosuslugi.ru/*
 // @grant        none
@@ -109,6 +109,7 @@
     ps.push({ type: 'year', name: 'Весь год', from: ps.reduce((m, p) => (p.from < m ? p.from : m), ps[0].from),
       to: ps.reduce((m, p) => (p.to > m ? p.to : m), ps[0].to), quarter: false });
     ps.school = cls.short_name || null; // название школы для шапки
+    ps.cls = cls.class_num ? `${cls.class_num}${cls.class_letter && cls.class_letter !== '-' ? cls.class_letter : ''} класс` : null;
     // Флаг period_is_study витрина отдаёт ненадёжно: у 11 класса четверти помечены основными,
     // хотя в журнале школы 10–11 классы учатся по полугодиям. Поэтому для старших классов
     // по умолчанию открываем полугодия (выбор ученика всё равно важнее, см. defaultPeriod).
@@ -512,6 +513,27 @@
   .msx-pill-ok{background:var(--g5);color:#fff}
   #msx-root[data-anim="all"] .msx-fin tbody tr{animation:msxUp .45s cubic-bezier(.2,.8,.2,1) backwards}
   @media (max-width:560px){.msx-tabs button{font-size:11px;padding:12px 1px}.msx-fin td.sj{font-size:13px;min-width:90px}.msx-fin .msx-m{min-width:34px;height:34px}.msx-fin td{padding:5px 3px}}
+    .msx-repbtns{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+  .msx-repbtn{display:flex;flex-direction:column;align-items:flex-start;gap:2px;text-align:left;border:0;border-radius:16px;padding:12px;cursor:pointer;background:var(--soft);color:var(--ink);font:inherit}
+  .msx-repbtn b{font-size:14px}.msx-repbtn small{font-size:11px;color:var(--muted)}
+  .msx-repbtn.col{background:linear-gradient(135deg,rgba(52,179,106,.22),rgba(240,176,40,.22) 60%,rgba(238,90,76,.2))}
+    .msx-newbox{background:var(--card);border-radius:24px;padding:14px 18px;margin:0 0 14px;box-shadow:inset 4px 0 0 var(--orange),0 4px 0 var(--line),0 8px 22px rgba(27,36,72,.06)}
+  .msx-newh{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:10px}
+  .msx-newh b{font-size:16px;font-weight:900}
+  .msx-newlist{display:flex;flex-wrap:wrap;gap:10px 18px}
+  .msx-newi{display:flex;align-items:center;gap:10px;min-width:0}
+  .msx-newi span{display:flex;flex-direction:column;font-size:13px;min-width:0}
+  .msx-newi small{color:var(--muted);font-size:11px}
+  .msx-m.msx-new::before{content:'';position:absolute;top:-4px;left:-4px;width:12px;height:12px;border-radius:50%;background:var(--orange);box-shadow:0 0 0 2px var(--card)}
+  .msx-tcount{display:inline-grid;place-items:center;min-width:18px;height:18px;padding:0 5px;margin-left:5px;border-radius:999px;background:var(--orange);color:#fff;font:800 11px/18px Arial,sans-serif;font-style:normal;vertical-align:1px}
+  .msx-tabs button[aria-current="page"] .msx-tcount{background:#fff;color:var(--orange)}
+  @media (max-width:560px){.msx-tcount{position:absolute;top:3px;right:6px;margin:0;min-width:16px;height:16px;font-size:10px;line-height:16px}
+    .msx-newbox{padding:12px 14px;border-radius:20px}.msx-newlist{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+    .msx-newi{gap:8px}.msx-newi small{display:none}.msx-newi>span b{font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .msx-newi .msx-m{min-width:40px;height:44px}}
+  @media (prefers-reduced-motion:no-preference){
+    @keyframes msxPing{0%{box-shadow:0 0 0 2px var(--card),0 0 0 0 rgba(226,86,40,.6)}100%{box-shadow:0 0 0 2px var(--card),0 0 0 12px rgba(226,86,40,0)}}
+    .msx-m.msx-new::before{animation:msxPing 1.4s ease-out .6s 3}}
     @media (max-width:560px){
     .msx-tabs{position:fixed;left:10px;right:10px;bottom:calc(10px + env(safe-area-inset-bottom,0px));z-index:3;display:flex;margin:0;box-shadow:0 6px 22px rgba(27,36,72,.28)}
     .msx-tabs button{flex:1;padding:12px 4px}
@@ -532,6 +554,26 @@
   let weekStart = monday(new Date());
   let hwDays = 14;
   let rerender = null; // как перерисовать текущую вкладку после смены типа оценки
+  // новые оценки: что ученик уже видел. Новыми считаем только внесённые после первого запуска,
+  // чтобы в первый раз не «выстрелили» все оценки года
+  const LS_SEEN = 'msx_seen_v1';
+  const seenAll = load(LS_SEEN, {});
+  const nowStamp = () => { const d = new Date(); return `${isoD(d)} ${d.toTimeString().slice(0, 8)}`; };
+  function seenOf() {
+    const sid = student && student.student_id;
+    if (!sid) return null;
+    if (!seenAll[sid]) { seenAll[sid] = { since: nowStamp(), ids: {} }; save(LS_SEEN, seenAll); }
+    return seenAll[sid];
+  }
+  const isNew = (m) => { const sv = seenOf(); return !!sv && !sv.ids[m.id] && String(m.create_datetime || '') > sv.since; };
+  function markSeen(list) {
+    const sv = seenOf(); if (!sv) return;
+    for (const m of list) sv.ids[m.id] = 1;
+    const keys = Object.keys(sv.ids); // не копим бесконечно
+    if (keys.length > 4000) for (const k of keys.slice(0, keys.length - 3000)) delete sv.ids[k];
+    save(LS_SEEN, seenAll);
+  }
+  const newMarks = () => (data ? data.marks.filter(isNew).sort((a, b) => String(b.create_datetime).localeCompare(String(a.create_datetime))) : []);
   const LS_DONE = 'msx_done_v1';
   const done = load(LS_DONE, {});
 
@@ -600,19 +642,16 @@
       h('button', { onclick: toggleTheme, 'aria-label': themeAria(), title: themeAria() }, themeLabel()),
       h('button', { onclick: refresh }, 'Обновить'),
       h('button', { onclick: closePanel }, APP ? 'Сайт' : 'Закрыть'));
+    const nNew = newMarks().length;
     const nav = h('nav', { class: 'msx-tabs', 'aria-label': 'Разделы' }, TABS.map(([k, n]) =>
-      h('button', { 'aria-current': k === tab ? 'page' : null, onclick: () => showTab(k) }, n)));
+      h('button', { 'aria-current': k === tab ? 'page' : null, onclick: () => showTab(k) }, n,
+        k === 'marks' && nNew ? h('i', { class: 'msx-tcount', 'aria-label': `новых: ${nNew}` }, String(nNew)) : null)));
     // в приложении внизу — версии и ручная проверка обновлений
     const appInfo = APP && window.MsxAndroid && MsxAndroid.appVersion
       ? h('p', { class: 'msx-appinfo' }, `Приложение ${MsxAndroid.appVersion()} · интерфейс ${window.MSX_SCRIPT_VERSION || '?'} `,
-        h('button', { class: 'msx-wbtn', onclick: () => MsxAndroid.checkUpdate() }, 'Проверить обновления'),
-        // эксперимент с продлением сессии: когда был вход и жива ли сессия
-        // нажатие открывает журнал проверок сессии (приложение 0.9.3+)
-        MsxAndroid.sessionInfo ? h('span', {
-          class: 'msx-sess' + (MsxAndroid.showSessionLog ? ' msx-sess-link' : ''),
-          role: MsxAndroid.showSessionLog ? 'button' : null,
-          onclick: MsxAndroid.showSessionLog ? () => MsxAndroid.showSessionLog() : null,
-        }, (MsxAndroid.sessionInfo() || (MsxAndroid.showSessionLog ? 'сессия' : '')) + (MsxAndroid.showSessionLog ? ' · журнал ›' : '')) : null)
+        h('button', { class: 'msx-wbtn', onclick: () => MsxAndroid.checkUpdate() }, 'Проверить обновления'), ' ',
+        // приложение 0.9.8+: сохранённый пароль от Госуслуг — удалить или снова предлагать сохранить
+        MsxAndroid.passwordMenu ? h('button', { class: 'msx-wbtn', onclick: () => MsxAndroid.passwordMenu() }, 'Пароль от Госуслуг') : null)
       : null;
     if (!isMessage) {
       clearTimeout(animTimer);
@@ -660,6 +699,14 @@
     return loadHw();
   }
 
+  function updateNewCount() {
+    const n = newMarks().length, b = root && root.querySelector('.msx-tcount');
+    if (b) { if (n) b.textContent = String(n); else b.remove(); }
+    const box = root && root.querySelector('.msx-newbox');
+    if (box && !n) box.remove();
+    else if (box) { const c = box.querySelector('.msx-newh b'); if (c) c.textContent = `Новые оценки — ${n}`; }
+  }
+
   function refresh() { cache.clear(); data = null; finals = null; showTab(tab); }
 
   function weightInputs(obj, onSet) {
@@ -672,7 +719,7 @@
   function markTile(m, lessons, reopenId, reopenRef) {
     const t = TYPES.find((x) => x.code === markType(m));
     const b = h('button', {
-      class: `msx-m ${grade(parseInt(m.mark_value1, 10))}${m.comment ? ' msx-cm' : ''}`,
+      class: `msx-m ${grade(parseInt(m.mark_value1, 10))}${m.comment ? ' msx-cm' : ''}${isNew(m) ? ' msx-new' : ''}`,
       'aria-haspopup': 'dialog', 'aria-expanded': 'false',
       'aria-label': `${m.subject_name}: ${m.mark_value1}, ${ddmm(m.mark_date)}, ${t.name}${m.comment ? ', есть комментарий' : ''}`,
       onclick: (e) => { e.stopPropagation(); openPop(m, b, lessons); },
@@ -700,6 +747,7 @@
     const same = pop && pop.id === m.id;
     closePop();
     if (same) return;
+    if (isNew(m)) { markSeen([m]); anchor.classList.remove('msx-new'); updateNewCount(); }
     const t = TYPES.find((x) => x.code === markType(m));
     const lf = lessonFor(m, lessons);
     const l = lf && lf.lesson;
@@ -825,7 +873,7 @@
 
   // ---------- вкладка «Оценки» ----------
   function marksControls() {
-    return periods ? [h('select', { 'aria-label': 'Период', onchange: async (e) => { period = periods[e.target.value]; save('msx_period_type', period.type); data = null; await reload(); } },
+    return periods ? [reportButton(), h('select', { 'aria-label': 'Период', onchange: async (e) => { period = periods[e.target.value]; save('msx_period_type', period.type); data = null; await reload(); } },
       periods.map((p, i) => h('option', { value: i, selected: p === period ? '' : null }, p.name)))] : [];
   }
 
@@ -839,6 +887,17 @@
     const body = h('div', {});
     body.append(h('p', { class: 'msx-info' },
       `${period.name}: ${data.marks.length} оценок${absTotal ? `, пропусков: ${absTotal}` : ''}. Нажмите на оценку, чтобы увидеть подробности и указать тип работы.`));
+    const fresh = newMarks();
+    if (fresh.length) {
+      const box = h('section', { class: 'msx-newbox', 'aria-label': 'Новые оценки' },
+        h('div', { class: 'msx-newh' }, h('b', {}, `Новые оценки — ${fresh.length}`),
+          h('button', { class: 'msx-wbtn', onclick: () => { markSeen(fresh); renderTable(); } }, 'Понятно')),
+        h('div', { class: 'msx-newlist' }, fresh.slice(0, 12).map((m) => h('div', { class: 'msx-newi' },
+          markTile(m, data.lessons, reopenId, []),
+          h('span', {}, h('b', {}, m.subject_name), h('small', {}, `${ddmm(m.mark_date)} · внесена ${stamp(m.create_datetime) || ''}`))))),
+        fresh.length > 12 ? h('div', { class: 'msx-hwmeta' }, `и ещё ${fresh.length - 12}`) : null);
+      body.append(box);
+    }
     if (absTotal) body.append(h('div', { class: 'msx-legend' },
       [['ab', 'Б', 'болезнь'], ['ap', 'П', 'уважительная'], ['an', 'Н', 'неуважительная'], ['ao', 'О', 'опоздание']]
         .map(([c, l, n]) => h('span', { class: c }, h('i', {}, l), n)),
@@ -901,6 +960,119 @@
     } catch (e) { renderMessage(e.message || String(e), true); }
   }
 
+
+
+  // ---------- сводка оценок в файл (PDF через печать) ----------
+  const esc = (x) => String(x == null ? '' : x).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  function reportHtml(color) {
+    const rows = summarize(data.marks).filter((r) => r.n > 0);
+    const abs = absencesBySubject(data.lessons, period.from, period.to);
+    for (const subj of abs.keys()) if (!rows.some((r) => r.subject === subj)) rows.push({ subject: subj, marks: [], n: 0, wsum: 0, wtot: 0, dist: { 5: 0, 4: 0, 3: 0, 2: 0 }, avg: null, wavg: null });
+    rows.sort((a, b) => a.subject.localeCompare(b.subject, 'ru'));
+    const withMarks = rows.filter((r) => r.n);
+    const S = withMarks.reduce((a, r) => a + r.wsum, 0), T = withMarks.reduce((a, r) => a + r.wtot, 0);
+    const dist = { 5: 0, 4: 0, 3: 0, 2: 0 };
+    for (const r of withMarks) for (const k of [5, 4, 3, 2]) dist[k] += r.dist[k];
+    const nMarks = dist[5] + dist[4] + dist[3] + dist[2];
+    const absN = [...abs.values()].reduce((a, xs) => a + xs.length, 0);
+    const st = student || {};
+    const fio = [st.student_last_name, st.student_first_name, st.student_middle_name].filter(Boolean).join(' ');
+    const g = (v) => { const n = Math.round(v); return n >= 5 ? 5 : n <= 2 ? 2 : n; };
+    const chip = (m) => {
+      const vals = markValues(m); if (!vals.length) return '';
+      const k = markType(m) === 'k', txt = m.mark_value2 ? `${m.mark_value1}/${m.mark_value2}` : String(m.mark_value1);
+      return `<span class="mk g${g(vals[0])}${k ? ' kr' : ''}" title="${esc(ddmm(m.mark_date))}">${esc(txt)}${k ? '<sub>к</sub>' : ''}</span>`;
+    };
+    const avgCell = (v) => (v == null ? '<td class="num">—</td>' : `<td class="num"><span class="av g${toGrade(v)}">${esc(fmt(v))}</span></td>`);
+    const body = rows.map((r, i) => {
+      const f = forecast(r), tf = teacherFinal(r.subject);
+      const out = tf ? `<span class="av g${g(parseInt(tf, 10) || 0)} fact" title="выставил учитель">${esc(tf)}</span>` : f ? `<span class="av g${f.grade} plan" title="прогноз">${f.grade}</span>` : '—';
+      const ab = (abs.get(r.subject) || []).map((l) => absInfo(l).letter);
+      const abTxt = ab.length ? Object.entries(ab.reduce((o, x) => ((o[x] = (o[x] || 0) + 1), o), {})).map(([k, n]) => `${k}&nbsp;${n}`).join(' ') : '';
+      return `<tr><td class="no">${i + 1}</td><td class="sj">${esc(r.subject)}</td><td class="mks">${r.marks.map(chip).join('')}</td>` +
+        `<td class="num">${r.n || ''}</td>${avgCell(r.avg)}${avgCell(r.wavg)}<td class="num out">${out}</td><td class="num ab">${abTxt}</td></tr>`;
+    }).join('');
+    const now = new Date();
+    const title = `Сводка оценок — ${period.type === 'year' ? 'учебный год' : period.name} ${ctx.year}/${Number(ctx.year) + 1}`;
+    return `<!doctype html><html lang="ru"><head><meta charset="utf-8"><title>${esc(title)}${fio ? ' — ' + esc(fio) : ''}</title><style>
+      @page{size:A4;margin:14mm 12mm}
+      *{box-sizing:border-box}
+      body{font:10.5pt/1.3 'Noto Sans','Segoe UI',Roboto,Arial,sans-serif;color:#111;margin:0;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+      h1{font-size:17pt;margin:0 0 2mm}
+      .meta{color:#444;font-size:10pt;margin-bottom:4mm}
+      .meta b{color:#111}
+      .sum{display:flex;gap:3mm;margin:0 0 3.5mm}
+      .sum>div{flex:1;border:1px solid #bbb;border-radius:3mm;padding:1.6mm 3mm}
+      .sum span{display:block;font-size:8pt;color:#555}
+      .sum b{font-size:14pt}
+      thead{display:table-header-group}
+      table{width:100%;border-collapse:collapse}
+      th{font-size:8.5pt;color:#444;text-align:left;border-bottom:1.5px solid #111;padding:1.5mm 1.5mm}
+      td{border-bottom:1px solid #ccc;padding:1mm 1.5mm;vertical-align:middle}
+      tr{page-break-inside:avoid}
+      th.num,td.num{text-align:center;white-space:nowrap}
+      td.no{color:#777;width:6mm}
+      td.sj{font-weight:700;width:34mm}
+      td.mks{line-height:1.75}
+      td.out small{display:block;font-size:7pt;color:#666}
+      .mk{display:inline-block;min-width:5mm;padding:0 .9mm;margin:0 .5mm .5mm 0;text-align:center;border-radius:1.3mm;font-weight:700;font-size:9.5pt;line-height:5mm}
+      .mk sub{font-size:6pt;font-weight:600;margin-left:.2mm}
+      .av{display:inline-block;min-width:9mm;padding:.3mm 1.2mm;border-radius:1.6mm;font-weight:800}
+      .av.plan{background:none!important;border:1.3px dashed #777}
+      .foot{margin-top:5mm;font-size:8.5pt;color:#555}
+      ${color ? `
+      .g5{background:#D6F1E1;color:#14653A}.g4{background:#E8F5D2;color:#3C6510}.g3{background:#FDEFC8;color:#7A5300}.g2{background:#FBDAD6;color:#9E2A1F}
+      .mk.kr{box-shadow:inset 0 0 0 1.3px currentColor}
+      .av.plan.g5{border-color:#34B36A}.av.plan.g4{border-color:#7FB534}.av.plan.g3{border-color:#E0A21E}.av.plan.g2{border-color:#EE5A4C}
+      .bar{display:flex;height:3mm;border-radius:2mm;overflow:hidden;margin:1.5mm 0 0}.bar i{display:block}
+      .bar .g5{background:#34B36A}.bar .g4{background:#9BD04C}.bar .g3{background:#F5BE3C}.bar .g2{background:#EE5A4C}` : `
+      .mk{border:1px solid #888}.mk.g2,.mk.g3{font-weight:900;border-color:#111}.mk.kr{border-width:1.6px;border-color:#111;text-decoration:underline}
+      .av{border:1px solid #888}.av.g2,.av.g3{font-weight:900;border-color:#111}
+      .bar{display:none}`}
+    </style></head><body>
+      <h1>${esc(title)}</h1>
+      <div class="meta">${fio ? `<b>${esc(fio)}</b>${ctx.cls ? ', ' + esc(ctx.cls) : ''} · ` : ''}${esc(ctx.school || '')} · период ${esc(ddmm(period.from))}.${period.from.slice(0, 4)}–${esc(ddmm(period.to))}.${period.to.slice(0, 4)} · сформировано ${esc(isoD(now).split('-').reverse().join('.'))}</div>
+      <div class="sum">
+        <div><span>Средний балл (с весами)</span><b>${esc(fmt(T ? round1(S / T) : null))}</b></div>
+        <div><span>Среднее по предметам</span><b>${esc(fmt(withMarks.length ? round1(withMarks.reduce((a, r) => a + r.wavg, 0) / withMarks.length) : null))}</b></div>
+        <div><span>Оценок</span><b>${nMarks}</b><span>«5» ${dist[5]} · «4» ${dist[4]} · «3» ${dist[3]} · «2» ${dist[2]}</span>
+          <div class="bar">${[5, 4, 3, 2].filter((k) => dist[k]).map((k) => `<i class="g${k}" style="flex:${dist[k]}"></i>`).join('')}</div></div>
+        <div><span>Пропусков</span><b>${absN}</b></div>
+      </div>
+      <table><thead><tr><th class="num">№</th><th>Предмет</th><th>Оценки</th><th class="num">Кол-во</th><th class="num">Средний</th><th class="num">Взвеш.</th><th class="num">Итог</th><th class="num">Пропуски</th></tr></thead>
+      <tbody>${body}</tbody></table>
+      <div class="foot">к — контрольная работа. «Взвеш.» учитывает веса работ. «Итог»: сплошная рамка — оценка, выставленная учителем; пунктир — прогноз, пока её нет (по обычному правилу: от 4,5 — «5», от 3,5 — «4», от 2,5 — «3»).
+        Пропуски: Б — болезнь, П — уважительная, Н — неуважительная, О — опоздание.<br>Неофициальная сводка по данным «Моя школа» (Госуслуги).</div>
+    </body></html>`;
+  }
+
+  function printReport(color) {
+    if (!data) return;
+    const html = reportHtml(color);
+    const title = (html.match(/<title>([^<]*)<\/title>/) || [])[1] || 'Сводка оценок';
+    // в приложении — системная печать Android («Сохранить как PDF»)
+    if (window.MsxAndroid && MsxAndroid.printHtml) { MsxAndroid.printHtml(html, title.replace(/&[a-z]+;/g, '')); return; }
+    const fr = h('iframe', { style: 'position:fixed;right:0;bottom:0;width:0;height:0;border:0', 'aria-hidden': 'true' });
+    fr.srcdoc = html;
+    fr.onload = () => { try { fr.contentWindow.focus(); fr.contentWindow.print(); } catch (_) { /* печать недоступна */ } setTimeout(() => fr.remove(), 60000); };
+    document.body.append(fr);
+  }
+
+  function openReportPop(anchor) {
+    const same = pop && pop.id === 'report';
+    closePop();
+    if (same) return;
+    const el = h('div', { class: 'msx-pop', role: 'dialog', 'aria-label': 'Сводка оценок' },
+      h('button', { class: 'msx-x', 'aria-label': 'Закрыть', onclick: closePop }, '×'),
+      h('div', { class: 'msx-pop-h' }, h('div', {}, 'Сводка оценок', h('small', {}, `${period.type === 'year' ? 'Весь год' : period.name} — в PDF или на печать`))),
+      h('p', { class: 'msx-info' }, APP ? 'Откроется печать Android: выберите «Сохранить как PDF» или принтер.' : 'Откроется окно печати: выберите «Сохранить как PDF» или принтер.'),
+      h('div', { class: 'msx-repbtns' },
+        h('button', { class: 'msx-repbtn col', onclick: () => { closePop(); printReport(true); } }, h('b', {}, 'Цветная'), h('small', {}, 'для экрана и цветного принтера')),
+        h('button', { class: 'msx-repbtn', onclick: () => { closePop(); printReport(false); } }, h('b', {}, 'Чёрно-белая'), h('small', {}, 'для обычного принтера'))));
+    placePop(el, anchor, 'report');
+    el.querySelector('.msx-repbtn').focus();
+  }
+  const reportButton = () => h('button', { onclick: (e) => { e.stopPropagation(); openReportPop(e.currentTarget); }, title: 'Сводка оценок в PDF' }, '⤓ Сводка');
 
   // ---------- итоговые оценки (выставляют учителя) ----------
   // Как на сайте: student_pmarks — за четверти/полугодия, student_ymarks — годовые и итоговые.
@@ -1460,7 +1632,7 @@
     if (wasHidden && !reduced() && root.animate) root.animate([{ opacity: 0, transform: 'scale(.985)' }, { opacity: 1, transform: 'none' }], { duration: 260, easing: 'cubic-bezier(.2,.8,.2,1)' });
     try {
       if (!ctx) { renderMessage('Подключаюсь к «Моя школа»…'); ctx = await loadContext(); student = ctx.students[0]; }
-      if (!periods) { const r = await loadPeriods(student, ctx.year); periods = r; ctx.school = r.school; period = defaultPeriod(periods); }
+      if (!periods) { const r = await loadPeriods(student, ctx.year); periods = r; ctx.school = r.school; ctx.cls = r.cls; period = defaultPeriod(periods); }
       await showTab(tab);
     } catch (e) { renderMessage(e.message || String(e), true); }
   }
