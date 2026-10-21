@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Моя школа — оценки, расписание, задания
 // @namespace    tortik96.myschool
-// @version      0.13.1
+// @version      0.13.2
 // @description  Удобный дневник поверх Госуслуг «Моя школа»: оценки со средним и средневзвешенным баллом, статистика и прогноз за четверть, расписание, домашние задания
 // @match        https://www.gosuslugi.ru/*
 // @grant        none
@@ -985,7 +985,12 @@
     const chip = (m) => {
       const vals = markValues(m); if (!vals.length) return '';
       const k = markType(m) === 'k', txt = m.mark_value2 ? `${m.mark_value1}/${m.mark_value2}` : String(m.mark_value1);
-      return `<span class="mk g${g(vals[0])}${k ? ' kr' : ''}" title="${esc(ddmm(m.mark_date))}">${esc(txt)}${k ? '<sub>к</sub>' : ''}</span>`;
+      // буква типа: к — контрольная, с — самостоятельная (наша пометка), иначе первая буква типа учителя («т» — тест)
+      const kn = kindName(m);
+      const letter = k ? 'к' : markType(m) === 's' ? 'с' : kn ? kn[0].toLowerCase() : '';
+      const w = apiWeight(m);
+      const tip = [ddmm(m.mark_date), k ? 'контрольная' : kn, w ? `вес ${m.weight}` : ''].filter(Boolean).join(', ');
+      return `<span class="mk g${g(vals[0])}${k ? ' kr' : ''}" title="${esc(tip)}">${esc(txt)}${letter ? `<sub>${esc(letter)}</sub>` : ''}</span>`;
     };
     const avgCell = (v) => (v == null ? '<td class="num">—</td>' : `<td class="num"><span class="av g${toGrade(v)}">${esc(fmt(v))}</span></td>`);
     const body = rows.map((r, i) => {
@@ -1020,7 +1025,7 @@
       td.mks{line-height:1.75}
       td.out small{display:block;font-size:7pt;color:#666}
       .mk{display:inline-block;min-width:5mm;padding:0 .9mm;margin:0 .5mm .5mm 0;text-align:center;border-radius:1.3mm;font-weight:700;font-size:9.5pt;line-height:5mm}
-      .mk sub{font-size:6pt;font-weight:600;margin-left:.2mm}
+      .mk sub{font-size:7.5pt;font-weight:800;margin-left:.3mm;vertical-align:-1px}
       .av{display:inline-block;min-width:9mm;padding:.3mm 1.2mm;border-radius:1.6mm;font-weight:800}
       .av.plan{background:none!important;border:1.3px dashed #777}
       .foot{margin-top:5mm;font-size:8.5pt;color:#555}
@@ -1045,9 +1050,17 @@
       </div>
       <table><thead><tr><th class="num">№</th><th>Предмет</th><th>Оценки</th><th class="num">Кол-во</th><th class="num">Средний</th><th class="num">Взвеш.</th><th class="num">Итог</th><th class="num">Пропуски</th></tr></thead>
       <tbody>${body}</tbody></table>
-      <div class="foot">к — контрольная работа. «Взвеш.» учитывает веса работ. «Итог»: сплошная рамка — оценка, выставленная учителем; пунктир — прогноз, пока её нет (по обычному правилу: от 4,5 — «5», от 3,5 — «4», от 2,5 — «3»).
+      <div class="foot">Маленькая буква у оценки — тип работы: к — контрольная, с — самостоятельная, остальные — первая буква типа, который задал учитель (т — тест и т. п.).${kindsLegend()} «Взвеш.» учитывает веса работ. «Итог»: сплошная рамка — оценка, выставленная учителем; пунктир — прогноз, пока её нет (по обычному правилу: от 4,5 — «5», от 3,5 — «4», от 2,5 — «3»).
         Пропуски: Б — болезнь, П — уважительная, Н — неуважительная, О — опоздание.<br>Неофициальная сводка по данным «Моя школа» (Госуслуги).</div>
     </body></html>`;
+  }
+
+  // какие типы учителей встретились в периоде — расшифровка букв для примечания сводки
+  function kindsLegend() {
+    const seen = new Map();
+    for (const m of data.marks) { const k = kindName(m); if (k && markType(m) !== 'k') seen.set(k[0].toLowerCase(), k); }
+    const items = [...seen.entries()].filter(([l]) => l !== 'к' && l !== 'с').map(([l, k]) => `${esc(l)} — ${esc(k.toLowerCase())}`);
+    return items.length ? ` В этом периоде: ${items.join(', ')}.` : '';
   }
 
   function printReport(color) {
