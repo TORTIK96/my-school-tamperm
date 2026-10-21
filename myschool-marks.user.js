@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Моя школа — оценки, расписание, задания
 // @namespace    tortik96.myschool
-// @version      0.13.0
+// @version      0.13.1
 // @description  Удобный дневник поверх Госуслуг «Моя школа»: оценки со средним и средневзвешенным баллом, статистика и прогноз за четверть, расписание, домашние задания
 // @match        https://www.gosuslugi.ru/*
 // @grant        none
@@ -177,6 +177,8 @@
     if (/independ|selfwork/i.test(code) || /самостоят/i.test(d)) return 's';
     return null;
   }
+  // название типа, который учитель задал в журнале («Тест», «Самостоятельная» …); у обычных оценок пусто
+  const kindName = (m) => { const k = String(m.work_kind || m.work_name || '').trim(); return k && !/^обычн/i.test(k) ? k : null; };
   // ручная пометка ученика важнее; без неё — тип из журнала; иначе обычная
   const markType = (m) => types[m.id] || apiType(m) || 'u';
   // по спецификации вес — строка и может быть с запятой, например "1,8"
@@ -721,10 +723,12 @@
     const b = h('button', {
       class: `msx-m ${grade(parseInt(m.mark_value1, 10))}${m.comment ? ' msx-cm' : ''}${isNew(m) ? ' msx-new' : ''}`,
       'aria-haspopup': 'dialog', 'aria-expanded': 'false',
-      'aria-label': `${m.subject_name}: ${m.mark_value1}, ${ddmm(m.mark_date)}, ${t.name}${m.comment ? ', есть комментарий' : ''}`,
+      'aria-label': `${m.subject_name}: ${m.mark_value1}, ${ddmm(m.mark_date)}, ${kindName(m) && t.code === 'u' ? kindName(m) : t.name}${m.comment ? ', есть комментарий' : ''}`,
       onclick: (e) => { e.stopPropagation(); openPop(m, b, lessons); },
     }, h('b', {}, m.mark_value2 ? `${m.mark_value1}/${m.mark_value2}` : (m.mark_value1 ?? '?')),
-    h('small', {}, ddmm(m.mark_date)), t.short ? h('i', {}, t.short) : null);
+    h('small', {}, ddmm(m.mark_date)),
+    // значок: наш тип (К/С), а если его нет — первая буква типа учителя («Т» — тест)
+    t.short ? h('i', {}, t.short) : kindName(m) ? h('i', { title: kindName(m) }, kindName(m)[0].toUpperCase()) : null);
     if (reopenId && m.id === reopenId) reopenRef.push(m, b, lessons);
     return b;
   }
@@ -758,7 +762,7 @@
       ['Урок', l ? (time || '—') + (lf.exact ? '' : ' (доп. столбец)') : noLessonText(m, lessons)],
       ['Тема', l && l.theme],
       ['Учитель', teacher],
-      ['Работа', m.work_name || sysType],
+      ['Работа', m.work_name || kindName(m) || sysType],
       ['Вес', apiWeight(m) ? `${m.weight} (из журнала)` : `${markWeight(m)} (ваша настройка)`],
       ['Внесена', stamp(m.create_datetime)],
       ['Исправлена', m.correction_date ? stamp(m.correction_date) : null],
