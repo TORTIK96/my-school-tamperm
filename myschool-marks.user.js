@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Моя школа — оценки, расписание, задания
 // @namespace    tortik96.myschool
-// @version      0.14.0
+// @version      0.14.1
 // @description  Удобный дневник поверх Госуслуг «Моя школа»: оценки со средним и средневзвешенным баллом, статистика и прогноз за четверть, расписание, домашние задания
 // @match        https://www.gosuslugi.ru/*
 // @grant        none
@@ -684,7 +684,7 @@
         student = ctx.students[e.target.value]; periods = null; data = null; finals = null; await openPanel(); } },
       ctx.students.map((s, i) => h('option', { value: i, selected: s === student ? '' : null }, s.student_first_name || `Ученик ${i + 1}`))));
     }
-    top.append(...(controls || []),
+    top.append(...(controls || []).filter(Boolean), // пустые элементы (например, нет переключателя шкалы) не выводим
       h('button', { onclick: toggleTheme, 'aria-label': themeAria(), title: themeAria() }, themeLabel()),
       h('button', { onclick: refresh }, 'Обновить'),
       h('button', { onclick: closePanel }, APP ? 'Сайт' : 'Закрыть'));
@@ -935,18 +935,29 @@
   }
 
   // границы перевода из 100-балльной (и 10-, 12-балльной) в пятибалльную — как в положении школы
+  let scaleSetOpen = null;   // открыт ли блок перевода (запоминаем, чтобы он не закрывался при каждом изменении)
+  let scaleFocus = null;     // какое поле вернуть в фокус после перерисовки
   function scaleSettings() {
     const used = [...new Set((data ? data.marks : []).filter(isOtherScale).map(scaleMax))];
     const scales = used.length ? used.filter((x) => scaleCfg[x]) : [100];
     const box = h('details', { class: 'msx-set msx-scaleset' }, h('summary', {}, h('b', {}, 'Перевод в пятибалльную шкалу'),
       used.length ? ` — в этом периоде есть оценки по ${used.map((x) => x + '-балльной').join(', ')} шкале` : ' — если в школе 100-балльная или другая система'));
-    if (used.length) box.open = true;
+    box.open = scaleSetOpen != null ? scaleSetOpen : used.length > 0;
+    box.addEventListener('toggle', () => { scaleSetOpen = box.open; });
     for (const mx of scales) {
       const t = scaleCfg[mx];
       box.append(h('div', { class: 'msx-scalerow' }, h('span', {}, `${mx}-балльная:`),
-        [5, 4, 3, 2].map((g) => h('label', {}, `«${g}» от`, h('input', { class: 'msx-inp', type: 'number', min: 1, max: mx, value: t[g],
-          onchange: (e) => { const v = Math.max(1, Math.min(mx, parseInt(e.target.value, 10) || t[g])); scaleCfg[mx] = Object.assign({}, t, { [g]: v }); save(LS_SCALE, scaleCfg); renderTable(); } }))),
-        h('button', { class: 'msx-wbtn', onclick: () => { scaleCfg[mx] = Object.assign({}, DEF_SCALES[mx]); save(LS_SCALE, scaleCfg); renderTable(); } }, 'Как обычно')));
+        [5, 4, 3, 2].map((g) => {
+          const inp = h('input', { class: 'msx-inp', type: 'number', min: 1, max: mx, value: t[g], 'data-k': `${mx}-${g}`,
+            onchange: (e) => {
+              const v = Math.max(1, Math.min(mx, parseInt(e.target.value, 10) || t[g]));
+              scaleCfg[mx] = Object.assign({}, scaleCfg[mx], { [g]: v }); save(LS_SCALE, scaleCfg);
+              scaleSetOpen = true; scaleFocus = `${mx}-${g}`;
+              renderTable();
+            } });
+          return h('label', {}, `«${g}» от`, inp);
+        }),
+        h('button', { class: 'msx-wbtn', onclick: () => { scaleCfg[mx] = Object.assign({}, DEF_SCALES[mx]); save(LS_SCALE, scaleCfg); scaleSetOpen = true; renderTable(); } }, 'Как обычно')));
     }
     box.append(h('p', { class: 'msx-info', style: 'margin:8px 0 0' }, 'Ниже нижней границы — «1». Средние, прогноз и статистика считаются в пятибалльной шкале; переключатель «Шкала школы / 5-балльная» вверху меняет только то, что написано на плитках.'));
     return box;
@@ -1020,6 +1031,7 @@
       scaleSettings());
     renderShell(body, marksControls());
     if (reopen.length) openPop(...reopen);
+    if (scaleFocus) { const el = root.querySelector(`.msx-scaleset input[data-k="${scaleFocus}"]`); scaleFocus = null; if (el) el.focus({ preventScroll: true }); }
   }
 
   async function reload() {
