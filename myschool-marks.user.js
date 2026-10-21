@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Моя школа — оценки, расписание, задания
 // @namespace    tortik96.myschool
-// @version      0.13.2
+// @version      0.14.0
 // @description  Удобный дневник поверх Госуслуг «Моя школа»: оценки со средним и средневзвешенным баллом, статистика и прогноз за четверть, расписание, домашние задания
 // @match        https://www.gosuslugi.ru/*
 // @grant        none
@@ -184,7 +184,41 @@
   // по спецификации вес — строка и может быть с запятой, например "1,8"
   const apiWeight = (m) => { const w = parseFloat(String(m.weight ?? '').replace(',', '.')); return w > 0 ? w : null; };
   const markWeight = (m) => apiWeight(m) || weightsFor(subjOf(m))[markType(m)] || 1;
-  const markValues = (m) => [m.mark_value1, m.mark_value2].map((x) => parseInt(x, 10)).filter((v) => v >= 1 && v <= 5);
+  // ---------- шкалы оценок: 100-, 10-, 12-балльные переводим в пятибалльную ----------
+  // Перевод по умолчанию для 100-балльной — как в положениях школ (86–100 → «5», 66–85 → «4», 41–65 → «3», 20–40 → «2»).
+  // Границы можно поменять в настройках под свою школу.
+  const LS_SCALE = 'msx_scale_v1';
+  const DEF_SCALES = { 100: { 5: 86, 4: 66, 3: 41, 2: 20 }, 10: { 5: 9, 4: 7, 3: 5, 2: 3 }, 12: { 5: 10, 4: 7, 3: 4, 2: 2 } };
+  const scaleCfg = Object.assign(JSON.parse(JSON.stringify(DEF_SCALES)), load(LS_SCALE, {}));
+  let schoolScaleView = load('msx_scale_view', true); // true — показывать баллы как в школе, false — переведённые в 5-балльную
+  function scaleMax(m) {
+    const c = String(m.scale_code || m.mark_scale_code || ''), d = String(m.scale_description || m.mark_scale_description || '');
+    const n = parseInt((c.match(/\d+/) || [])[0], 10);
+    if (n > 1) return n;
+    if (/стоб|100/i.test(d)) return 100;
+    if (/двенадц|12/i.test(d)) return 12;
+    if (/десят|10/i.test(d)) return 10;
+    const v = Math.max(0, ...[m.mark_value1, m.mark_value2].map((x) => parseFloat(x)).filter((x) => x > 0));
+    return v > 12 ? 100 : v > 10 ? 12 : v > 5 ? 10 : 5; // шкала не указана — угадываем по самому баллу
+  }
+  function to5(v, max) {
+    if (!max || max === 5) return Math.round(v);
+    const t = scaleCfg[max];
+    if (!t) return Math.max(1, Math.min(5, Math.round((v / max) * 5)));
+    return v >= t[5] ? 5 : v >= t[4] ? 4 : v >= t[3] ? 3 : v >= t[2] ? 2 : 1;
+  }
+  const rawValues = (m) => [m.mark_value1, m.mark_value2].map((x) => parseFloat(String(x ?? '').replace(',', '.'))).filter((v) => v > 0);
+  // значения в пятибалльной — на них считаются средние, прогноз, статистика
+  const markValues = (m) => { const mx = scaleMax(m); return rawValues(m).filter((v) => v <= mx).map((v) => to5(v, mx)).filter((v) => v >= 1 && v <= 5); };
+  const isOtherScale = (m) => scaleMax(m) !== 5;
+  // что написать на плитке: баллы школы или переведённые
+  function markText(m) {
+    const raw = [m.mark_value1, m.mark_value2].filter((x) => x != null && x !== '');
+    if (!raw.length) return '?';
+    if (!isOtherScale(m) || schoolScaleView) return raw.join('/');
+    return markValues(m).join('/') || '?';
+  }
+  const markGrade = (m) => grade(markValues(m)[0] ?? null);
 
   function summarize(marks) {
     const bySubj = new Map();
@@ -197,8 +231,10 @@
       ms.sort((a, b) => a.mark_date.localeCompare(b.mark_date) || String(a.id).localeCompare(String(b.id)));
       let sum = 0, n = 0, wsum = 0, wtot = 0, ksum = 0, kn = 0;
       const dist = { 5: 0, 4: 0, 3: 0, 2: 0 };
+      let rsum = 0, rn = 0, rmax = null, rmixed = false;
       for (const m of ms) {
         const w = markWeight(m);
+        if (isOtherScale(m)) { const mx = scaleMax(m); if (rmax != null && rmax !== mx) rmixed = true; rmax = mx; for (const v of rawValues(m)) { rsum += v; rn++; } } else if (rmax != null) rmixed = true;
         for (const v of markValues(m)) { // двойная оценка 4/5 считается как две
           sum += v; n++; wsum += v * w; wtot += w;
           if (markType(m) === 'k') { ksum += v; kn++; }
@@ -206,6 +242,7 @@
         }
       }
       return { subject, marks: ms, n, sum, wsum, wtot, dist,
+        rawAvg: rn && !rmixed ? rsum / rn : null, rawMax: rn && !rmixed ? rmax : null,
         avg: n ? sum / n : null, wavg: wtot ? wsum / wtot : null, kavg: kn ? ksum / kn : null };
     });
   }
@@ -536,6 +573,13 @@
   @media (prefers-reduced-motion:no-preference){
     @keyframes msxPing{0%{box-shadow:0 0 0 2px var(--card),0 0 0 0 rgba(226,86,40,.6)}100%{box-shadow:0 0 0 2px var(--card),0 0 0 12px rgba(226,86,40,0)}}
     .msx-m.msx-new::before{animation:msxPing 1.4s ease-out .6s 3}}
+    .msx-m.msx-wide{min-width:52px}.msx-m.msx-wide b{font-size:18px}
+  .msx-scaleseg{display:inline-grid;grid-template-columns:1fr 1fr;width:auto;box-shadow:inset 0 -3px 0 var(--line),0 2px 8px rgba(27,36,72,.08);background:var(--card)}
+  .msx-top .msx-scaleseg button{box-shadow:none;padding:8px 12px;font-size:13px;border-radius:999px}
+  .msx-top .msx-scaleseg button[aria-pressed="true"]{background:var(--ink);color:var(--paper)}
+  .msx-scaleset summary{cursor:pointer}
+  .msx-scalerow{display:flex;flex-wrap:wrap;align-items:center;gap:4px 14px;margin-top:10px;font-size:13px}
+  .msx-scalerow>span{font-weight:800}
     @media (max-width:560px){
     .msx-tabs{position:fixed;left:10px;right:10px;bottom:calc(10px + env(safe-area-inset-bottom,0px));z-index:3;display:flex;margin:0;box-shadow:0 6px 22px rgba(27,36,72,.28)}
     .msx-tabs button{flex:1;padding:12px 4px}
@@ -721,11 +765,11 @@
   function markTile(m, lessons, reopenId, reopenRef) {
     const t = TYPES.find((x) => x.code === markType(m));
     const b = h('button', {
-      class: `msx-m ${grade(parseInt(m.mark_value1, 10))}${m.comment ? ' msx-cm' : ''}${isNew(m) ? ' msx-new' : ''}`,
+      class: `msx-m ${markGrade(m)}${m.comment ? ' msx-cm' : ''}${isNew(m) ? ' msx-new' : ''}${isOtherScale(m) && schoolScaleView ? ' msx-wide' : ''}`,
       'aria-haspopup': 'dialog', 'aria-expanded': 'false',
-      'aria-label': `${m.subject_name}: ${m.mark_value1}, ${ddmm(m.mark_date)}, ${kindName(m) && t.code === 'u' ? kindName(m) : t.name}${m.comment ? ', есть комментарий' : ''}`,
+      'aria-label': `${m.subject_name}: ${markText(m)}${isOtherScale(m) ? ` из ${scaleMax(m)}` : ''}, ${ddmm(m.mark_date)}, ${kindName(m) && t.code === 'u' ? kindName(m) : t.name}${m.comment ? ', есть комментарий' : ''}`,
       onclick: (e) => { e.stopPropagation(); openPop(m, b, lessons); },
-    }, h('b', {}, m.mark_value2 ? `${m.mark_value1}/${m.mark_value2}` : (m.mark_value1 ?? '?')),
+    }, h('b', {}, markText(m)),
     h('small', {}, ddmm(m.mark_date)),
     // значок: наш тип (К/С), а если его нет — первая буква типа учителя («Т» — тест)
     t.short ? h('i', {}, t.short) : kindName(m) ? h('i', { title: kindName(m) }, kindName(m)[0].toUpperCase()) : null);
@@ -763,6 +807,7 @@
       ['Тема', l && l.theme],
       ['Учитель', teacher],
       ['Работа', m.work_name || kindName(m) || sysType],
+      ['Шкала', isOtherScale(m) ? `${rawValues(m).join('/')} из ${scaleMax(m)} → «${markValues(m).join('/')}» по 5-балльной` : null],
       ['Вес', apiWeight(m) ? `${m.weight} (из журнала)` : `${markWeight(m)} (ваша настройка)`],
       ['Внесена', stamp(m.create_datetime)],
       ['Исправлена', m.correction_date ? stamp(m.correction_date) : null],
@@ -770,8 +815,7 @@
     const el = h('div', { class: 'msx-pop', role: 'dialog', 'aria-label': 'Оценка' },
       h('button', { class: 'msx-x', 'aria-label': 'Закрыть', onclick: closePop }, '×'),
       h('div', { class: 'msx-pop-h' },
-        h('span', { class: `msx-m ${grade(parseInt(m.mark_value1, 10))}` },
-          h('b', {}, m.mark_value2 ? `${m.mark_value1}/${m.mark_value2}` : (m.mark_value1 ?? '?'))),
+        h('span', { class: `msx-m ${markGrade(m)}${isOtherScale(m) && schoolScaleView ? ' msx-wide' : ''}` }, h('b', {}, markText(m))),
         h('div', {}, m.subject_name, h('small', {}, longDate(m.mark_date)))),
       h('dl', {}, rows.map(([k, v]) => [h('dt', {}, k), h('dd', {}, v)])),
       m.comment ? h('p', { class: 'msx-note' }, 'Комментарий учителя: ', m.comment)
@@ -798,9 +842,10 @@
   // (сколько учеников получили каждую оценку и где вы), без чьих-либо данных.
   function classStats(m) {
     const list = Array.isArray(m.students_test) ? m.students_test : [];
-    const vals = list.map((x) => ({ v: parseInt(x.mark_value1, 10), me: x.student_id === m.student_id })).filter((x) => x.v >= 1 && x.v <= 5);
+    const mx = scaleMax(m);
+    const vals = list.map((x) => ({ v: to5(parseFloat(x.mark_value1), mx), me: x.student_id === m.student_id })).filter((x) => x.v >= 1 && x.v <= 5);
     if (vals.length < 2) return null;
-    const mine = (vals.find((x) => x.me) || {}).v ?? parseInt(m.mark_value1, 10);
+    const mine = (vals.find((x) => x.me) || {}).v ?? markValues(m)[0];
     const avg = vals.reduce((a, x) => a + x.v, 0) / vals.length;
     const rows = [5, 4, 3, 2, 1].map((g) => ({ g, n: vals.filter((x) => x.v === g).length })).filter((r) => r.n);
     return h('div', { class: 'msx-cls' },
@@ -876,9 +921,35 @@
   }
 
   // ---------- вкладка «Оценки» ----------
+  const hasOtherScale = () => !!(data && data.marks.some(isOtherScale));
+  function scaleToggle() {
+    if (!hasOtherScale()) return null;
+    const set = (v) => { schoolScaleView = v; save('msx_scale_view', v); if (rerender) rerender(); else showTab(tab); };
+    return h('div', { class: 'msx-seg msx-scaleseg', role: 'group', 'aria-label': 'Шкала оценок' },
+      h('button', { 'aria-pressed': String(schoolScaleView), onclick: () => set(true), title: 'Баллы, как их ставит школа' }, 'Шкала школы'),
+      h('button', { 'aria-pressed': String(!schoolScaleView), onclick: () => set(false), title: 'Переведённые в пятибалльную' }, '5-балльная'));
+  }
   function marksControls() {
-    return periods ? [reportButton(), h('select', { 'aria-label': 'Период', onchange: async (e) => { period = periods[e.target.value]; save('msx_period_type', period.type); data = null; await reload(); } },
+    return periods ? [scaleToggle(), reportButton(), h('select', { 'aria-label': 'Период', onchange: async (e) => { period = periods[e.target.value]; save('msx_period_type', period.type); data = null; await reload(); } },
       periods.map((p, i) => h('option', { value: i, selected: p === period ? '' : null }, p.name)))] : [];
+  }
+
+  // границы перевода из 100-балльной (и 10-, 12-балльной) в пятибалльную — как в положении школы
+  function scaleSettings() {
+    const used = [...new Set((data ? data.marks : []).filter(isOtherScale).map(scaleMax))];
+    const scales = used.length ? used.filter((x) => scaleCfg[x]) : [100];
+    const box = h('details', { class: 'msx-set msx-scaleset' }, h('summary', {}, h('b', {}, 'Перевод в пятибалльную шкалу'),
+      used.length ? ` — в этом периоде есть оценки по ${used.map((x) => x + '-балльной').join(', ')} шкале` : ' — если в школе 100-балльная или другая система'));
+    if (used.length) box.open = true;
+    for (const mx of scales) {
+      const t = scaleCfg[mx];
+      box.append(h('div', { class: 'msx-scalerow' }, h('span', {}, `${mx}-балльная:`),
+        [5, 4, 3, 2].map((g) => h('label', {}, `«${g}» от`, h('input', { class: 'msx-inp', type: 'number', min: 1, max: mx, value: t[g],
+          onchange: (e) => { const v = Math.max(1, Math.min(mx, parseInt(e.target.value, 10) || t[g])); scaleCfg[mx] = Object.assign({}, t, { [g]: v }); save(LS_SCALE, scaleCfg); renderTable(); } }))),
+        h('button', { class: 'msx-wbtn', onclick: () => { scaleCfg[mx] = Object.assign({}, DEF_SCALES[mx]); save(LS_SCALE, scaleCfg); renderTable(); } }, 'Как обычно')));
+    }
+    box.append(h('p', { class: 'msx-info', style: 'margin:8px 0 0' }, 'Ниже нижней границы — «1». Средние, прогноз и статистика считаются в пятибалльной шкале; переключатель «Шкала школы / 5-балльная» вверху меняет только то, что написано на плитках.'));
+    return box;
   }
 
   function renderTable(reopenId) {
@@ -928,6 +999,7 @@
           ...(showAbs ? (abs.get(r.subject) || []).map((l) => ({ d: String(l.start_datetime).slice(0, 10), el: absTile(l) })) : []),
         ].sort((a, b) => a.d.localeCompare(b.d)).map((x) => x.el)),
         h('div', { class: 'msx-avg plain', 'aria-label': 'Средний балл ' + fmt(r.avg) }, h('b', { class: grade(r.avg) }, fmt(r.avg)),
+          r.rawAvg != null ? h('span', { class: 'msx-kr', title: `Среднее в ${r.rawMax}-балльной шкале школы` }, `в баллах: ${fmt(Math.round(r.rawAvg * 10) / 10)}`) : null,
           r.kavg != null ? h('span', { class: 'msx-kr' }, 'по КР ' + fmt(r.kavg)) : null),
         h('div', { class: 'msx-avg wt', 'aria-label': 'Средневзвешенный балл ' + fmt(r.wavg),
           title: weighted ? 'С учётом весов' : 'Веса не заданы — совпадает со средним' }, h('b', { class: grade(r.wavg) }, fmt(r.wavg)),
@@ -944,7 +1016,8 @@
     body.append(h('div', { class: 'msx-set' },
       h('div', {}, h('b', {}, 'Общие веса'), ' — для предметов без своих весов. Узнайте их у учителя (журнал → «Задать типы») или в «Положении о текущем контроле».'),
       weightInputs(Object.assign({}, DEFAULT_W, W.global), (code, v) => { W.global[code] = v; saveW(); renderTable(); }),
-      anyWeighted ? null : h('p', { class: 'msx-info', style: 'margin:6px 0 0' }, 'Пока все веса равны 1, поэтому взвешенный балл совпадает с обычным средним. Так же считает и сам журнал, если учитель не задал веса.')));
+      anyWeighted ? null : h('p', { class: 'msx-info', style: 'margin:6px 0 0' }, 'Пока все веса равны 1, поэтому взвешенный балл совпадает с обычным средним. Так же считает и сам журнал, если учитель не задал веса.')),
+      scaleSettings());
     renderShell(body, marksControls());
     if (reopen.length) openPop(...reopen);
   }
@@ -984,7 +1057,7 @@
     const g = (v) => { const n = Math.round(v); return n >= 5 ? 5 : n <= 2 ? 2 : n; };
     const chip = (m) => {
       const vals = markValues(m); if (!vals.length) return '';
-      const k = markType(m) === 'k', txt = m.mark_value2 ? `${m.mark_value1}/${m.mark_value2}` : String(m.mark_value1);
+      const k = markType(m) === 'k', txt = markText(m);
       // буква типа: к — контрольная, с — самостоятельная (наша пометка), иначе первая буква типа учителя («т» — тест)
       const kn = kindName(m);
       const letter = k ? 'к' : markType(m) === 's' ? 'с' : kn ? kn[0].toLowerCase() : '';
@@ -1003,6 +1076,8 @@
     }).join('');
     const now = new Date();
     const title = `Сводка оценок — ${period.type === 'year' ? 'учебный год' : period.name} ${ctx.year}/${Number(ctx.year) + 1}`;
+    const otherScales = [...new Set(data.marks.filter(isOtherScale).map(scaleMax))];
+    const scaleNote = otherScales.length ? ` Оценки ${schoolScaleView ? `указаны в ${otherScales.join('/')}-балльной шкале школы` : 'переведены в пятибалльную'}; средние и итог — в пятибалльной (перевод: ${otherScales.filter((x) => scaleCfg[x]).map((x) => { const t = scaleCfg[x]; return `«5» от ${t[5]}, «4» от ${t[4]}, «3» от ${t[3]}, «2» от ${t[2]}`; }).join('; ')}).` : '';
     return `<!doctype html><html lang="ru"><head><meta charset="utf-8"><title>${esc(title)}${fio ? ' — ' + esc(fio) : ''}</title><style>
       @page{size:A4;margin:14mm 12mm}
       *{box-sizing:border-box}
@@ -1051,7 +1126,7 @@
       <table><thead><tr><th class="num">№</th><th>Предмет</th><th>Оценки</th><th class="num">Кол-во</th><th class="num">Средний</th><th class="num">Взвеш.</th><th class="num">Итог</th><th class="num">Пропуски</th></tr></thead>
       <tbody>${body}</tbody></table>
       <div class="foot">Маленькая буква у оценки — тип работы: к — контрольная, с — самостоятельная, остальные — первая буква типа, который задал учитель (т — тест и т. п.).${kindsLegend()} «Взвеш.» учитывает веса работ. «Итог»: сплошная рамка — оценка, выставленная учителем; пунктир — прогноз, пока её нет (по обычному правилу: от 4,5 — «5», от 3,5 — «4», от 2,5 — «3»).
-        Пропуски: Б — болезнь, П — уважительная, Н — неуважительная, О — опоздание.<br>Неофициальная сводка по данным «Моя школа» (Госуслуги).</div>
+        Пропуски: Б — болезнь, П — уважительная, Н — неуважительная, О — опоздание.<br>${esc(scaleNote)}<br>Неофициальная сводка по данным «Моя школа» (Госуслуги).</div>
     </body></html>`;
   }
 
@@ -1128,7 +1203,7 @@
     if (period.type === 'year') return (finals.year.get(subject) || {}).fact || null;
     return ((finals.byPeriod.get(period.id) || new Map()).get(subject) || {}).fact || null;
   }
-  const markCls = (v) => { const n = parseInt(v, 10); return n >= 1 && n <= 5 ? grade(n) : 'none'; };
+  const markCls = (v) => { const n = parseFloat(v); return n >= 1 && n <= 5 ? grade(n) : n > 5 ? grade(to5(n, n > 12 ? 100 : n > 10 ? 12 : 10)) : 'none'; };
 
   async function loadFinal() {
     renderMessage('Загружаю итоговые оценки…');
