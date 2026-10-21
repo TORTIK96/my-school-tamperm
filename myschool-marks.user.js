@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Моя школа — оценки, расписание, задания
 // @namespace    tortik96.myschool
-// @version      0.14.1
+// @version      0.14.2
 // @description  Удобный дневник поверх Госуслуг «Моя школа»: оценки со средним и средневзвешенным баллом, статистика и прогноз за четверть, расписание, домашние задания
 // @match        https://www.gosuslugi.ru/*
 // @grant        none
@@ -230,7 +230,7 @@
     return [...bySubj.entries()].sort((a, b) => a[0].localeCompare(b[0], 'ru')).map(([subject, ms]) => {
       ms.sort((a, b) => a.mark_date.localeCompare(b.mark_date) || String(a.id).localeCompare(String(b.id)));
       let sum = 0, n = 0, wsum = 0, wtot = 0, ksum = 0, kn = 0;
-      const dist = { 5: 0, 4: 0, 3: 0, 2: 0 };
+      const dist = { 5: 0, 4: 0, 3: 0, 2: 0, 1: 0 };
       let rsum = 0, rn = 0, rmax = null, rmixed = false;
       for (const m of ms) {
         const w = markWeight(m);
@@ -238,7 +238,7 @@
         for (const v of markValues(m)) { // двойная оценка 4/5 считается как две
           sum += v; n++; wsum += v * w; wtot += w;
           if (markType(m) === 'k') { ksum += v; kn++; }
-          dist[Math.max(2, v)]++;
+          dist[v]++; // колы считаем отдельно
         }
       }
       return { subject, marks: ms, n, sum, wsum, wtot, dist,
@@ -272,7 +272,7 @@
 
   // 5 вместо 5,00 и 4,5 вместо 4,50
   const fmt = (x) => (x == null ? '—' : String(Math.round(x * 100) / 100).replace('.', ','));
-  const grade = (x) => (x == null ? 'none' : x >= 4.5 ? 'g5' : x >= 3.5 ? 'g4' : x >= 2.5 ? 'g3' : 'g2');
+  const grade = (x) => (x == null ? 'none' : x >= 4.5 ? 'g5' : x >= 3.5 ? 'g4' : x >= 2.5 ? 'g3' : x >= 1.5 ? 'g2' : 'g1');
   const ddmm = (s) => s.slice(8, 10) + '.' + s.slice(5, 7);
   const SEG = { u: 'Обычная', s: 'Самостоят.', k: 'Контрольная' }; // короткие подписи, чтобы влезли в одну строку
   const WEEKDAYS = ['воскресенье', 'понедельник', 'вторник', 'среда', 'четверг', 'пятница', 'суббота'];
@@ -580,7 +580,8 @@
   .msx-scaleset summary{cursor:pointer}
   .msx-scalerow{display:flex;flex-wrap:wrap;align-items:center;gap:4px 14px;margin-top:10px;font-size:13px}
   .msx-scalerow>span{font-weight:800}
-    @media (max-width:560px){
+  .g1{--c:#B3261E;--on:#fff}
+  @media (max-width:560px){
     .msx-tabs{position:fixed;left:10px;right:10px;bottom:calc(10px + env(safe-area-inset-bottom,0px));z-index:3;display:flex;margin:0;box-shadow:0 6px 22px rgba(27,36,72,.28)}
     .msx-tabs button{flex:1;padding:12px 4px}
     .msx-wrap{padding-bottom:100px}
@@ -1056,13 +1057,13 @@
   function reportHtml(color) {
     const rows = summarize(data.marks).filter((r) => r.n > 0);
     const abs = absencesBySubject(data.lessons, period.from, period.to);
-    for (const subj of abs.keys()) if (!rows.some((r) => r.subject === subj)) rows.push({ subject: subj, marks: [], n: 0, wsum: 0, wtot: 0, dist: { 5: 0, 4: 0, 3: 0, 2: 0 }, avg: null, wavg: null });
+    for (const subj of abs.keys()) if (!rows.some((r) => r.subject === subj)) rows.push({ subject: subj, marks: [], n: 0, wsum: 0, wtot: 0, dist: { 5: 0, 4: 0, 3: 0, 2: 0, 1: 0 }, avg: null, wavg: null });
     rows.sort((a, b) => a.subject.localeCompare(b.subject, 'ru'));
     const withMarks = rows.filter((r) => r.n);
     const S = withMarks.reduce((a, r) => a + r.wsum, 0), T = withMarks.reduce((a, r) => a + r.wtot, 0);
-    const dist = { 5: 0, 4: 0, 3: 0, 2: 0 };
-    for (const r of withMarks) for (const k of [5, 4, 3, 2]) dist[k] += r.dist[k];
-    const nMarks = dist[5] + dist[4] + dist[3] + dist[2];
+    const dist = { 5: 0, 4: 0, 3: 0, 2: 0, 1: 0 };
+    for (const r of withMarks) for (const k of [5, 4, 3, 2, 1]) dist[k] += r.dist[k] || 0;
+    const nMarks = dist[5] + dist[4] + dist[3] + dist[2] + dist[1];
     const absN = [...abs.values()].reduce((a, xs) => a + xs.length, 0);
     const st = student || {};
     const fio = [st.student_last_name, st.student_first_name, st.student_middle_name].filter(Boolean).join(' ');
@@ -1117,7 +1118,7 @@
       .av.plan{background:none!important;border:1.3px dashed #777}
       .foot{margin-top:5mm;font-size:8.5pt;color:#555}
       ${color ? `
-      .g5{background:#D6F1E1;color:#14653A}.g4{background:#E8F5D2;color:#3C6510}.g3{background:#FDEFC8;color:#7A5300}.g2{background:#FBDAD6;color:#9E2A1F}
+      .g5{background:#D6F1E1;color:#14653A}.g4{background:#E8F5D2;color:#3C6510}.g3{background:#FDEFC8;color:#7A5300}.g2{background:#FBDAD6;color:#9E2A1F}.g1{background:#F4C7C3;color:#7A1810}
       .mk.kr{box-shadow:inset 0 0 0 1.3px currentColor}
       .av.plan.g5{border-color:#34B36A}.av.plan.g4{border-color:#7FB534}.av.plan.g3{border-color:#E0A21E}.av.plan.g2{border-color:#EE5A4C}
       .bar{display:flex;height:3mm;border-radius:2mm;overflow:hidden;margin:1.5mm 0 0}.bar i{display:block}
@@ -1131,8 +1132,8 @@
       <div class="sum">
         <div><span>Средний балл (с весами)</span><b>${esc(fmt(T ? round1(S / T) : null))}</b></div>
         <div><span>Среднее по предметам</span><b>${esc(fmt(withMarks.length ? round1(withMarks.reduce((a, r) => a + r.wavg, 0) / withMarks.length) : null))}</b></div>
-        <div><span>Оценок</span><b>${nMarks}</b><span>«5» ${dist[5]} · «4» ${dist[4]} · «3» ${dist[3]} · «2» ${dist[2]}</span>
-          <div class="bar">${[5, 4, 3, 2].filter((k) => dist[k]).map((k) => `<i class="g${k}" style="flex:${dist[k]}"></i>`).join('')}</div></div>
+        <div><span>Оценок</span><b>${nMarks}</b><span>«5» ${dist[5]} · «4» ${dist[4]} · «3» ${dist[3]} · «2» ${dist[2]}${dist[1] ? ` · «1» ${dist[1]}` : ''}</span>
+          <div class="bar">${[5, 4, 3, 2, 1].filter((k) => dist[k]).map((k) => `<i class="g${Math.max(2, k)}" style="flex:${dist[k]}"></i>`).join('')}</div></div>
         <div><span>Пропусков</span><b>${absN}</b></div>
       </div>
       <table><thead><tr><th class="num">№</th><th>Предмет</th><th>Оценки</th><th class="num">Кол-во</th><th class="num">Средний</th><th class="num">Взвеш.</th><th class="num">Итог</th><th class="num">Пропуски</th></tr></thead>
@@ -1465,9 +1466,10 @@
     const S = rows.reduce((a, r) => a + r.wsum, 0), T = rows.reduce((a, r) => a + r.wtot, 0);
     const pooled = T ? S / T : null;
     const ofSubj = rows.reduce((a, r) => a + r.wavg, 0) / rows.length;
-    const dist = { 5: 0, 4: 0, 3: 0, 2: 0 };
-    for (const r of rows) for (const k of [5, 4, 3, 2]) dist[k] += r.dist[k];
-    const nMarks = dist[5] + dist[4] + dist[3] + dist[2];
+    const dist = { 5: 0, 4: 0, 3: 0, 2: 0, 1: 0 };
+    for (const r of rows) for (const k of [5, 4, 3, 2, 1]) dist[k] += r.dist[k] || 0;
+    const nMarks = dist[5] + dist[4] + dist[3] + dist[2] + dist[1];
+    const GR = dist[1] ? [5, 4, 3, 2, 1] : [5, 4, 3, 2]; // «1» показываем, только если колы есть
     const abs = absencesBySubject(data.lessons, period.from, period.to);
     const absAll = [...abs.values()].flat();
     const absBy = { 'Б': 0, 'П': 0, 'Н': 0, 'О': 0 };
@@ -1493,12 +1495,12 @@
 
     // --- какие оценки ---
     body.append(h('section', { class: 'msx-card' }, h('h3', {}, 'Какие оценки'),
-      h('div', { class: 'msx-gchips' }, [5, 4, 3, 2].map((k) => h('div', { class: 'msx-gchip' },
+      h('div', { class: 'msx-gchips' }, GR.map((k) => h('div', { class: 'msx-gchip' },
         h('span', { class: `msx-m g${k}` }, h('b', {}, String(k))),
         h('div', {}, h('b', { 'data-count': dist[k], 'data-dec': '0' }, String(dist[k])),
           h('small', {}, `${nMarks ? Math.round((dist[k] / nMarks) * 100) : 0}%`))))),
-      h('div', { class: 'msx-dist', role: 'img', 'aria-label': [5, 4, 3, 2].map((k) => `«${k}»: ${dist[k]}`).join(', ') },
-        [5, 4, 3, 2].filter((k) => dist[k]).map((k) => h('span', { class: `g${k}`, style: `flex:${dist[k]}`, title: `«${k}»: ${dist[k]}` })))));
+      h('div', { class: 'msx-dist', role: 'img', 'aria-label': GR.map((k) => `«${k}»: ${dist[k]}`).join(', ') },
+        GR.filter((k) => dist[k]).map((k) => h('span', { class: `g${Math.max(2, k)}${k === 1 ? ' g1' : ''}`, style: `flex:${dist[k]}`, title: `«${k}»: ${dist[k]}` })))));
 
     // --- предметы: шкала 2…5 и прогноз ---
     const fc = rows.map((r) => ({ r, f: forecast(r) })).filter((x) => x.f)
