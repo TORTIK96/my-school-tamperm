@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Моя школа — оценки, расписание, задания
 // @namespace    tortik96.myschool
-// @version      0.14.2
+// @version      0.15.0
 // @description  Удобный дневник поверх Госуслуг «Моя школа»: оценки со средним и средневзвешенным баллом, статистика и прогноз за четверть, расписание, домашние задания
 // @match        https://www.gosuslugi.ru/*
 // @grant        none
@@ -24,6 +24,19 @@
     { code: 's', short: 'С', name: 'Самостоятельная' },
     { code: 'k', short: 'К', name: 'Контрольная' },
   ];
+  // Общешкольные типы работ из журнала и их веса (настройки журнала Садовской СОШ №1).
+  // В «Мою школу» тип доходит не всегда: например, ВКР может прийти как обычная оценка без веса —
+  // тогда ученик помечает оценку сам, и считается вес из этой таблицы.
+  const SCHOOL_TYPES = [
+    ['АКР', 'Административная контр. работа', 4, 1], ['ВКР', 'Входная контрольная работа', 4, 1],
+    ['ИКР', 'Итоговая контрольная работа', 4, 1], ['ВКД', 'Входной контрольный диктант', 4, 1],
+    ['КР', 'Контрольная работа', 3, 1], ['Д', 'Диктант', 3, 1], ['ИКД', 'Итоговый контрольный диктант', 1, 1],
+    ['КД', 'Контрольный диктант', 3, 0], ['СОЧ', 'Сочинение', 3, 0], ['ИЗЛ', 'Изложение', 3, 0],
+    ['ИС', 'Изложение с элементами сочинения', 3, 0], ['СР', 'Самостоятельная работа', 2, 0],
+    ['ДСР', 'Домашняя самостоятельная работа', 2, 0], ['ПР', 'Проверочная работа', 2, 0], ['ПрР', 'Практическая работа', 2, 0],
+    ['Тест', 'Тест', 2, 0], ['ЛР', 'Лабораторная работа', 2, 0], ['МД', 'Математический диктант', 2, 0],
+    ['РКК', 'Работа с контурными картами', 2, 0], ['ОИ', 'Обучающее изложение', 2, 0], ['ОС', 'Обучающее сочинение', 2, 0],
+  ].map(([short, name, w, kr]) => ({ short, name, w, kr: !!kr }));
   const DEFAULT_W = { u: 1, s: 1, k: 1 }; // пока веса не заданы, взвешенное = обычному среднему
   const load = (k, d) => { try { return JSON.parse(localStorage.getItem(k)) || d; } catch { return d; } };
   const save = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch { /* нет места */ } };
@@ -179,11 +192,32 @@
   }
   // название типа, который учитель задал в журнале («Тест», «Самостоятельная» …); у обычных оценок пусто
   const kindName = (m) => { const k = String(m.work_kind || m.work_name || '').trim(); return k && !/^обычн/i.test(k) ? k : null; };
+  // тип школы: ручная пометка «st:ВКР» или название типа, пришедшее из журнала
+  const norm = (x) => String(x || '').trim().toLowerCase().replace(/\s+/g, ' ').replace(/\.$/, '');
+  function schoolType(m) {
+    const o = types[m.id];
+    if (typeof o === 'string' && o.startsWith('st:')) return SCHOOL_TYPES.find((x) => x.short === o.slice(3)) || null;
+    if (o) return null; // помечена одной из трёх общих кнопок
+    const k = norm(m.work_kind || m.work_name);
+    return k ? SCHOOL_TYPES.find((x) => norm(x.name) === k || norm(x.short) === k) || null : null;
+  }
+  const manualSchool = (m) => typeof types[m.id] === 'string' && types[m.id].startsWith('st:');
   // ручная пометка ученика важнее; без неё — тип из журнала; иначе обычная
-  const markType = (m) => types[m.id] || apiType(m) || 'u';
+  const markType = (m) => {
+    const o = types[m.id];
+    if (o && !String(o).startsWith('st:')) return o;
+    const st = schoolType(m);
+    if (st && manualSchool(m)) return st.kr ? 'k' : 'u';
+    return apiType(m) || (st && st.kr ? 'k' : 'u');
+  };
   // по спецификации вес — строка и может быть с запятой, например "1,8"
   const apiWeight = (m) => { const w = parseFloat(String(m.weight ?? '').replace(',', '.')); return w > 0 ? w : null; };
-  const markWeight = (m) => apiWeight(m) || weightsFor(subjOf(m))[markType(m)] || 1;
+  // вес: своя пометка типа школы → вес из журнала → вес типа по таблице школы → настройка ученика
+  const markWeight = (m) => {
+    const st = schoolType(m);
+    if (st && manualSchool(m)) return st.w;
+    return apiWeight(m) || (st && st.w) || weightsFor(subjOf(m))[markType(m)] || 1;
+  };
   // ---------- шкалы оценок: 100-, 10-, 12-балльные переводим в пятибалльную ----------
   // Перевод по умолчанию для 100-балльной — как в положениях школ (86–100 → «5», 66–85 → «4», 41–65 → «3», 20–40 → «2»).
   // Границы можно поменять в настройках под свою школу.
@@ -353,6 +387,8 @@
   .msx-seg{display:grid;grid-template-columns:repeat(3,1fr);gap:4px;background:var(--soft);padding:4px;border-radius:999px}
   .msx-seg button{font:700 12px 'Noto Sans',Arial,sans-serif;padding:8px 4px;border-radius:999px;border:0;background:transparent;color:var(--ink);cursor:pointer}
   .msx-seg button[aria-pressed="true"]{background:var(--ink);color:var(--paper)}
+  .msx-sttype{display:block;margin-top:10px;font:700 12px 'Noto Sans',Arial,sans-serif;color:var(--muted)}
+  .msx-sttype select{display:block;width:100%;margin-top:4px;padding:8px 10px;border-radius:12px;border:0;background:var(--soft);color:var(--ink);font:600 13px 'Noto Sans',Arial,sans-serif}
   .msx-x{position:absolute;top:10px;right:12px;width:30px;height:30px;border:0;border-radius:50%;background:var(--soft);color:var(--muted);font-size:18px;cursor:pointer;line-height:1}
   @media (max-width:560px){.msx-wrap{padding:16px 12px 32px}.msx-top h2{font-size:34px}
     .msx-head,.msx-row{grid-template-columns:minmax(0,1fr) 66px 66px}
@@ -768,12 +804,13 @@
     const b = h('button', {
       class: `msx-m ${markGrade(m)}${m.comment ? ' msx-cm' : ''}${isNew(m) ? ' msx-new' : ''}${isOtherScale(m) && schoolScaleView ? ' msx-wide' : ''}`,
       'aria-haspopup': 'dialog', 'aria-expanded': 'false',
-      'aria-label': `${m.subject_name}: ${markText(m)}${isOtherScale(m) ? ` из ${scaleMax(m)}` : ''}, ${ddmm(m.mark_date)}, ${kindName(m) && t.code === 'u' ? kindName(m) : t.name}${m.comment ? ', есть комментарий' : ''}`,
+      'aria-label': `${m.subject_name}: ${markText(m)}${isOtherScale(m) ? ` из ${scaleMax(m)}` : ''}, ${ddmm(m.mark_date)}, ${manualSchool(m) ? schoolType(m).name : kindName(m) && t.code === 'u' ? kindName(m) : t.name}${m.comment ? ', есть комментарий' : ''}`,
       onclick: (e) => { e.stopPropagation(); openPop(m, b, lessons); },
     }, h('b', {}, markText(m)),
     h('small', {}, ddmm(m.mark_date)),
     // значок: наш тип (К/С), а если его нет — первая буква типа учителя («Т» — тест)
-    t.short ? h('i', {}, t.short) : kindName(m) ? h('i', { title: kindName(m) }, kindName(m)[0].toUpperCase()) : null);
+    manualSchool(m) ? h('i', { title: schoolType(m).name }, schoolType(m).short)
+      : t.short ? h('i', {}, t.short) : kindName(m) ? h('i', { title: kindName(m) }, kindName(m)[0].toUpperCase()) : null);
     if (reopenId && m.id === reopenId) reopenRef.push(m, b, lessons);
     return b;
   }
@@ -809,7 +846,8 @@
       ['Учитель', teacher],
       ['Работа', m.work_name || kindName(m) || sysType],
       ['Шкала', isOtherScale(m) ? `${rawValues(m).join('/')} из ${scaleMax(m)} → «${markValues(m).join('/')}» по 5-балльной` : null],
-      ['Вес', apiWeight(m) ? `${m.weight} (из журнала)` : `${markWeight(m)} (ваша настройка)`],
+      ['Вес', manualSchool(m) ? `${markWeight(m)} (${schoolType(m).short} — ваша пометка${apiWeight(m) && apiWeight(m) !== markWeight(m) ? `, в журнале ${m.weight}` : ''})`
+        : apiWeight(m) ? `${m.weight} (из журнала)` : schoolType(m) ? `${markWeight(m)} (${schoolType(m).short} по таблице школы)` : `${markWeight(m)} (ваша настройка)`],
       ['Внесена', stamp(m.create_datetime)],
       ['Исправлена', m.correction_date ? stamp(m.correction_date) : null],
     ].filter(([, v]) => v);
@@ -834,7 +872,20 @@
           save(LS_TYPES, types);
           if (rerender) rerender(m.id);
         },
-      }, SEG[x.code]))));
+      }, SEG[x.code]))),
+      // точный тип из списка школы — если в «Мою школу» он не дошёл (ВКР пришла как обычная оценка)
+      h('label', { class: 'msx-sttype' }, 'Точный тип в журнале школы:',
+        h('select', {
+          onclick: (e) => e.stopPropagation(),
+          onchange: (e) => {
+            const v = e.target.value;
+            if (v) types[m.id] = 'st:' + v; else delete types[m.id];
+            save(LS_TYPES, types);
+            if (rerender) rerender(m.id);
+          },
+        }, h('option', { value: '' }, manualSchool(m) ? '— убрать пометку —' : '— как пришло из журнала —'),
+        SCHOOL_TYPES.map((x) => h('option', { value: x.short, selected: manualSchool(m) && schoolType(m).short === x.short ? 'selected' : null },
+          `${x.short} · вес ${x.w} — ${x.name}`)))));
     placePop(el, anchor, m.id);
     el.querySelector('.msx-seg button[aria-pressed="true"]').focus();
   }
@@ -1073,9 +1124,10 @@
       const k = markType(m) === 'k', txt = markText(m);
       // буква типа: к — контрольная, с — самостоятельная (наша пометка), иначе первая буква типа учителя («т» — тест)
       const kn = kindName(m);
-      const letter = k ? 'к' : markType(m) === 's' ? 'с' : kn ? kn[0].toLowerCase() : '';
-      const w = apiWeight(m);
-      const tip = [ddmm(m.mark_date), k ? 'контрольная' : kn, w ? `вес ${m.weight}` : ''].filter(Boolean).join(', ');
+      const sm = manualSchool(m) ? schoolType(m) : null;
+      const letter = sm ? sm.short.toLowerCase() : k ? 'к' : markType(m) === 's' ? 'с' : kn ? kn[0].toLowerCase() : '';
+      const w = markWeight(m);
+      const tip = [ddmm(m.mark_date), sm ? sm.name : k ? 'контрольная' : kn, w !== 1 ? `вес ${w}` : ''].filter(Boolean).join(', ');
       return `<span class="mk g${g(vals[0])}${k ? ' kr' : ''}" title="${esc(tip)}">${esc(txt)}${letter ? `<sub>${esc(letter)}</sub>` : ''}</span>`;
     };
     const avgCell = (v) => (v == null ? '<td class="num">—</td>' : `<td class="num"><span class="av g${toGrade(v)}">${esc(fmt(v))}</span></td>`);
@@ -1138,7 +1190,7 @@
       </div>
       <table><thead><tr><th class="num">№</th><th>Предмет</th><th>Оценки</th><th class="num">Кол-во</th><th class="num">Средний</th><th class="num">Взвеш.</th><th class="num">Итог</th><th class="num">Пропуски</th></tr></thead>
       <tbody>${body}</tbody></table>
-      <div class="foot">Маленькая буква у оценки — тип работы: к — контрольная, с — самостоятельная, остальные — первая буква типа, который задал учитель (т — тест и т. п.).${kindsLegend()} «Взвеш.» учитывает веса работ. «Итог»: сплошная рамка — оценка, выставленная учителем; пунктир — прогноз, пока её нет (по обычному правилу: от 4,5 — «5», от 3,5 — «4», от 2,5 — «3»).
+      <div class="foot">Маленькая буква у оценки — тип работы: к — контрольная, с — самостоятельная, вкр, акр и т. п. — тип по списку школы, который вы отметили сами; остальные — первая буква типа, который задал учитель (т — тест и т. п.).${kindsLegend()} «Взвеш.» учитывает веса работ. «Итог»: сплошная рамка — оценка, выставленная учителем; пунктир — прогноз, пока её нет (по обычному правилу: от 4,5 — «5», от 3,5 — «4», от 2,5 — «3»).
         Пропуски: Б — болезнь, П — уважительная, Н — неуважительная, О — опоздание.<br>${esc(scaleNote)}<br>Неофициальная сводка по данным «Моя школа» (Госуслуги).</div>
     </body></html>`;
   }
